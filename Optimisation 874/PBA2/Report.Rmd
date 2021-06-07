@@ -1,0 +1,503 @@
+---
+title: "Optimisation 874"
+subtitle: "Post Block Assessment 2"
+author: "Francois van Zyl: 18620426"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# DBMOSA implementation 
+
+The goal of this assignment is to implement a dominance-based multi-objective simulated annealing (DBMOSA) algorithm to solve a minimisation problem with $f_1(x) = x^2$, and $f_2(x) = (x - 2)^2$ with $x$ being an element of $[-10^5, 10^5]$. I worked in RStudio, and started the problem by clearing my workspace and writing a simple function that can evaluate the objective functions for certain values of $x$. This function takes as input a value or vector of values representing $x$, and returns a dataframe containing the objective values calculated at this value of x.  
+
+```{r}
+rm(list = ls()) # Clear workspace
+evaluate_objective <- function(x) # Function to evaluate objectives
+{
+  f1 = x^2  # Defined objective values
+  f2 = (x-2)^2
+  return(data.frame(f1, f2))  # Return objective values
+}
+```
+
+Thereafter I wrote a function to generate neighbours for the DBMOSA algorithm. There is no standard procedure to do implement this, however it is required to be random to exploit the fact that DBMOSA can accept non-improving solutions. I decided to implement a neighbourhood function that perturbs the existing solution according to the current and initial temperature settings. At high temperatures, DBMOSA act as a sort of random walk where the algorithm has a higher probability of choosing non-improving moves, and at lower temperatures, the probability of accepting non-improving moves declines. Therefore, I thought it would be interesting to implement a neighbourhood function that generates a random neighbour within predefined limits that are controlled by the ratio of the current temperature to the initial temperature. Therefore, at higher temperatures the function has the possibility to generate neighbours that are farther away, and as the temperature is decreased this distance that the neighbours can be drawn from is decreased. I set up the function such that a high temperatures, the function will generate neighbours that are more likely to be far away, at medium temperatures, the function will generate neighbours that are more likely to be far away but less far than at high temperatures, and at low temperatures, the function will generate neighbours that are closer than the previous temperatures. I defined high temperatures as temperatures that fall above 2/3 of the initial starting temperature, medium temperatures as temperatures that fall between 1/3 and 2/3 of the initial starting temperature, and low temperatures as temperatures that fall below 1/3 of the intial starting temperature. At these three brackets, (high, medium and low) the random perturbation that is applied to the decision value is drawn from a random uniform distribution with limits corresponding to $[-10^4, 10^4]$, $[-10^3, 10^3]$, and $[-10^1, 10^1]$ respectively. The function is displayed below, and it takes as input the current decision value $x$, the current temperature *temp*, as well as the initial temperature *temp_init*, and returns the perturbed point *x_new*. \newpage
+
+
+
+```{r}
+generate_neighbour <- function(x, temp, temp_init) 
+{
+  limits <- c(-10^5, 10^5) # Limits of decision space
+  x_new <- Inf # Ensure while loop is entered
+  if(temp > 2*temp_init/3) # If the temp is in high bracket
+  {
+    while(!(x_new > limits[1] && x_new < limits[2]))  # While x_new is out of limits
+    {
+      x_new <- x + runif(1, min = -10^4, max = 10^4) # Generate a new random point 
+    } 
+  }
+  if(temp > temp/3 && temp < 2*temp_init/3 ) # If the temp is in med bracket
+  {
+    while(!(x_new > limits[1] && x_new < limits[2])) # While x_new is out of limits
+    {
+      x_new <- x + runif(1, min = -10^2, max = 10^2) # Generate a new random point 
+    }
+  }
+  if(temp < temp_init/3) # If the temp is in low bracket
+  {
+    while(!(x_new > limits[1] && x_new < limits[2])) # While x_new is out of limits
+    {
+      x_new <- x + runif(1, min = -10^0, max = 10^0) # Generate a new random point 
+    }
+  }
+  return(x_new) # Return the perturbed point
+}
+```
+
+Thereafter I wrote a function that will act to accept a solution into the archive **A**. The function takes as input the existing archive A, and the current decision value x. It then evaluates the objective of x, and binds it into A row-wise (meaning each row in A corresponds to a non-dominated solution) and returns the new A.
+
+```{r}
+accept_soln <- function(A, x)
+{
+  f <- evaluate_objective(x) # Evaluate the objective of x
+  return(rbind(A, f)) # Bind 
+}
+```
+
+The following function was used to count how many solutions exist within A that dominate $x$. The function takes as input the existing archive A, and the decision variable $x$ which represents either the objective function values of the current or neighbouring solution. A counter is initialized after which a for loop is entered, in which a single if statement is computed for each row within the existing archive. This if statement is only passed if the entry within A is at least as good as $x$ in $f_1(x)$ and even better than $x$ in $f_2(x)$, or alternatively if the entry in A is better in $f_1(x)$ than $x$ and at least as good in $f_2(x)$ as $x$. This is the definition of domination, in which case A dominates $x$. Therefore if this if statement returns true, the counter is incremented implying that the row or entry within A dominates the objective values of $x$.        \newpage
+
+
+```{r}
+num_dom_soln <- function(A, x) # Function to count how many solns within A dominate x
+{
+  counter <- 0 # Initialize counter
+  for(i in 1:nrow(A)) # Compare the i-th row of A
+  {
+    if(((A$f1[i] <= x$f1) & # If A's f1 is at least as good as x's f1
+        (A$f2[i] < x$f2)) || # And A's f2 is better than x's f2
+       ((A$f1[i] < x$f1) & # Or if A's f1 better than x's f1
+        (A$f2[i] <= x$f2))) # And A's f2 is at least as good as x's f2
+      counter <- counter + 1 # Then x is dominated by the entry in A
+  }
+  return(counter) # Return the times the amount of times x was dominated
+}
+```
+
+Thereafter I considered implementing the cooling schedule. The temperature is required to remain positive for all iterations and should never fall below zero. There are various methods of updating the temperature for simulated annealing and variant algorithms, and I only considered linear, geometric, logarithmic and exponential schemes. I gained my inspiration for these temperature update equations from the course textbook. The variables alpha and beta were chosen as specified below, based upon similar applications. Alpha is required to fall within $[0, 1]$ and beta is required to be a postive constant value. Since the linear scheme is the only scheme that has the potential to drive the temperature out of a positive range, I included a statement to cap the temperature at a minimum value as seen below The function takes as input the current temperature *temp*, the option specifying whether this is a **cool** or **reheat** problem, the type specifying the type of cooling scheme to apply **[linear, geometric, logarithmic, and exponential]**, the current iteration **t**, as well as a copy of the initial temperature *temp_init*. According to the textbook by Talbi, the current iteration and initial temperature is used within the linear and logarithmic cooling schedules.
+
+
+```{r}
+temp_adjust <- function(temp, option, type, t, temp_init)
+{
+  alpha <- 0.9 # Alpha [0,1]
+  beta <- 5 # Beta > 0
+  if(type == "linear")
+  {
+    if(option == "cool")  temp <- temp_init - t*beta # Reduces temp
+    if(option == "reheat") temp <- temp_init + t*beta # Increases temp
+    if(temp < 0) temp = 0.01
+  }
+  if(type == "geometric")
+  {
+    if(option == "cool")  temp <- temp*alpha # Reduces temp
+    if(option == "reheat") temp <- temp*beta # Increases temp
+  }
+  if(type == "logarithmic")
+  {
+    if(option == "cool")  temp <- temp_init/log(t) # Reduces temp
+    if(option == "reheat") temp <- temp_init*log(t) # Increases temp
+  }
+  if(type == "exponential")
+  {
+    if(option == "cool")  temp <- temp/(1 + beta*temp) # Reduces temp
+    if(option == "reheat") temp <- temp*(1 + beta*temp) # Increases temp
+  }
+  return(temp)            } # Return the update temperature
+```
+
+Thereafter, I implemented a function that discards all dominated solutions from the archive A.  I started the function by ensuring no duplicated rows are kept, ensuring all rows or solutions are unique. Thereafter I initialized a counter to keep track of the amount of solutions that are dominated. Then, the function uses two for loops that operate on the amount of solutions in the archive to compare the dominance of the solutions kept within the archive The first for loop represents a solution that is kept stationary while being compared to the solutions from the second for loop. Inside these two for loops, an if statement exists that checks for the dominance of the two solutions under consideration (note an measure is in place to ensure a solution is not compared to itself), by the same sort of logic that was applied previously. If this if statement returns true and is entered, the solution j must be dominated and it is added to the counter of rows/solutions that are dominated. After the nested for loop completes, the dominated rows are removed from the archive, and the archive is returned.  If no dominated rows were found the input archive is returned unchanged. The function is displayed below. 
+
+
+```{r}
+discard_dom_solns <- function(A) # Input only archive of ND solns
+{
+  A <- A[!duplicated(A),] # Ensure no row/soln is duplicated
+  dominated_rows <- c() # Initialize counter for dominated solutions
+  for(i in 1:nrow(A)) # Compare the i-th row
+  {
+    for(j in 1:nrow(A)) # To the j-th row
+    {
+      if(i != j && # If the i-th row is not equal to the j-th row and
+         ((A$f1[i] <= A$f1[j]) & # 1. If f1[i] at least as good as f1[j]
+          (A$f2[i] < A$f2[j])) || # And f2[i] is better than f2[j]
+         ((A$f1[i] < A$f1[j]) &  # 2. Or if f1[i] is better than f1[j]
+          (A$f2[i] <= A$f2[j]))) # And f2[i] at least as good as f2[j]
+        dominated_rows <- rbind(dominated_rows, j) # Then the j-th row is dominated by i-th row
+    }
+  }
+  ifelse(is.null(dominated_rows), 
+         return(A),
+         return(A[-sort(unique(dominated_rows)),]))
+  # Output non-dominated archive
+}
+```
+
+Thereafter I implemented the function to calculate the energy of the movement transition. I started by setting up the archive called A_tilde which is defined as the union of the current archive, the current solution $f(x)$, and that of the neighbouring solution $f(x')$, or $A_t$ = $A$ $\cup$ $f(x)$ $\cup$ $f(x')$. Thereafter, I calculated the amount of dominated solutions that exist within A_tilde that dominate the solutions $f(x)$ and $f(x')$, respectively. This was accomplished by using the num_dom_soln function previously defined. Note that the input variables are received by the function in their decision form and prior to calculating the energy and the necessary pre-calculations the current and neighbouring decision values are first converted to their respective objective forms by using the evaluate_objective previously defined. This function also has a option for returning the cardinality of A_x_tilde in Step 8 of the pseudocode for DBMOSA.
+
+
+```{r}
+calculate_energy <- function(A, x, x_neigh, option = "energy")
+{
+  A_tilde <- rbind(A, evaluate_objective(x), evaluate_objective(x_neigh)) # Set up A_tilde
+  A_x_tilde <- num_dom_soln(A_tilde, evaluate_objective(x))  # Total dominating x
+  A_x_tilde_neigh <- num_dom_soln(A_tilde, evaluate_objective(x_neigh)) # Total dominating x'
+  A_entries <- nrow(A_tilde) # Total entries within A tilde
+  energy <- (A_x_tilde_neigh - A_x_tilde)/A_entries  # Energy calculation
+  if(option == "energy") return(energy) # If the energy is requested
+  if(option == "A_x_tilde") return(A_x_tilde) # If the cardinality of A_x_tilde is requested
+}
+```
+
+
+All the functions displayed above are instrumental to the working of the DBMOSA algorithm and will be called from within the DBMOSA algorithm later. The functions following are some more simple functions which will be used to illustrate results obtained from the DBMOSA algorithm. The first function is called plot_objective, and receives the archive A as input from the algorithm and plots the true pareto front in the objective space as a curved line. A black square is placed at the best possible trade-off for a global minimum or pareto optimal set of $[f_1(x), f_2(x)]$ = [1, 1] at $x = 1$, and red dots are used to illustrate where the non-dominated archived solutions are, which act as the approximate pareto optimal set.
+
+```{r}
+plot_objective <- function(results) # Plot Pareto front within objective space
+{
+  true_pareto <- evaluate_objective(seq(-3,3)) # For x-values ranging from -3 to 3
+  with(true_pareto, plot(f1, f2, type = "l", main = "Objective Space")) # True pareto front
+  points(results[[1]]$f1, results[[1]]$f2, col = "red", pch = 1) # Archived solutions
+  points(1, 1, pch = 19, col = "black", cex = 0.6) # True global minimum
+}
+```
+
+The next function receives the archive A as input and then plots the approximate pareto optimal set and true pareto optimal set in decision space. A black square is placed at the best-possible true pareto optimal set, and red dots are placed at the approximate pareto optimal set. Note that this graph will contain both objective functions plotted on the same set of axes with, therefore two graphs will be visible in different sized dotted lines, and for each x-value there will be two objective function values corresponding to $f_1(x)$ and $f_2(x)$. The x-axis correspond to the x-values obtained, and the y-values reflect the values that the objective functions achieved. Note that this function uses a function called find_decision_val which will be defined after this function.
+
+```{r}
+
+plot_decision <- function(results) # Plot Pareto optimal set within decision space
+{
+  x = seq(-3,3) # For x-values ranging from -3 to 3
+  true_pareto <- evaluate_objective(x) # Evaluate the objectives
+  with(true_pareto, plot(x, f1, main = "Decision Space", type = "l", lty = 3,
+                         pch = 19, xlab = "X-values", ylab = "Objective Values"))
+  with(true_pareto, points(x, f2, type = "l", lty = 2))
+  points(find_decision_val(results[[1]]), results[[1]][[1]], col = "red", pch = 1)
+  points(find_decision_val(results[[1]]), results[[1]][[2]], col = "red", pch = 1)
+  points(1, 1, pch = 19, col = "black", cex = 0.6) # True global minimum
+}
+```
+
+The way I implemented DBMOSA did not save the decision values and archived only the relevant objective function values. Since this quite a simple problem to solve [2 simultaneous quadratic equations], and because I did not know of a library that performs the relevant calculations, I solved the problem manually. I'm certain there is a more efficient way to do this, but since this was a simple problem I just implemented this function. The function just ensures that the roots of the polynomials are the same.  The function receives the archive A as input, and returns the roots for x that are required for the relevant objective function values. \newpage
+
+
+```{r}
+find_decision_val<- function(df) # Tests for + +, - +, --, +-
+{ 
+  x1 <- x2 <- c()
+  for(i in 1:nrow(df)) # For each value within the results
+  {
+    x1[i] = sqrt(df$f1[i]) # x1 positive root 
+    x2[i] = sqrt(df$f2[i]) + 2 # x2 positive root 
+    if(!(x1[i] == x2[i])) # if x1 and x2 not equal
+    {
+      x1[i] = -sqrt(df$f1[i]) # Change x1 to negative root
+    }
+    if(!(x1[i] == x2[i])) # if x1 and x2 not equal
+    {
+      x2[i] = -sqrt(df$f2[i]) + 2 # Change x2 to negative root
+    }
+    if(!(x1[i] == x2[i])) # if x1 and x2 not equal
+    {
+      x1[i] = sqrt(df$f1[i]) # Change x1 back to positive root
+    }
+  }
+  return(x1) # Return root
+}
+```
+
+The following function was used to simply tabulate the results returned from the DBMOSA nicely. The function takes as input the output list of the DBMOSA algorithm, and rearranges the list to nicely to show the archive, the archive's respective decision values, the total epochs performed, the total iterations performed, as well as the final and initial decision value position, and the final temperature obtained before termination. 
+
+
+```{r}
+displayResults <- function(results)
+{
+  tab <- knitr::kable(data.frame(results[[1]], # Archive of ND solutions
+                                 x = find_decision_val(results[[1]]), # Decision values
+                                 epoch = results[[2]], # Epochs performed
+                                 iter = results[[3]], # Iterations performed
+                                 final_x = results[[4]], # Final decision value before termination
+                                 init_x = results[[5]], # Initial decision value
+                                 temp = results[[6]])) # Final temperature before termination
+  return(list(tab)) # Returns/displays the table
+}
+```
+
+\newpage
+
+Thereafter I implemented the DBMOSA algorithm by referring to the pseudocode provided to us for a minimisation MOP. The function takes as input i_max, c_max, d_max, the temperature, and the cooling/reheating schedule. The pseudocode is as follows.
+
+0) Generate feasible solution x, initialise archive A, initialize epochs i, intialize acceptance c, initialize rejections d, intiailize iterations t.
+1) If i = i_max output A and stop
+2) If d = d_max then reheat temperature, increment epochs, reset acceptances and rejections. Check max epochs not reached before proceeding
+3) If c = c_max then cool temperature, increment epochs, reset acceptances and rejections. Check max epochs not reached before proceeding.
+4) Generate a neighbouring solution x'
+5) If random number between [0, 1] > Metropolis acceptance rule; then reject neighbour, increment iterations and rejections and repeat from step 2.
+6) If random number between [0, 1] < Metropolis acceptance rule; then Accept neighbour $x$ = $x'$
+7) And increment acceptances
+8) And if the number of solutions dominating this x within A_tilde is zero: then insert it into the archive A and remove all solutions dominated by x.
+9) And finally end the if loop by incrementing iterations and repeat from step 3.
+
+I followed these steps precisely, and the algorithm is displayed on the following page. The function takes as input i_max, c_max, d_max, the temperature, and the cooling/reheating schedule and returns as output a list containing the archive, epochs, iterations, final decision value, initial decision value, and the final temperature that were obtained before termination. I included comments that refer to steps which correspond to steps 0 to 9 as displayed above in the pseudocode. As an initial starting position, I drew a random point drawn from a uniform distribution that lies within the limits of the decision space. 
+
+\newpage
+
+
+```{r}
+DBMOSA <- function(i_max, c_max, d_max, temp, annealing_type) 
+{
+  i <- 1 # Step 0: Initialise the number of epochs 
+  limits <- c(-10^5, 10^5) # Limits of the decision space
+  x_init <- x <- runif(1, limits[1], limits[2]) #Step 0: Generate an initial feasible solution x 
+  A <- evaluate_objective(x) # Step 0: Initialise the archive A = {x}
+  c <- 0 # Step 0: Initialise the number of acceptances 
+  d <- 0 # Step 0: Initialise the number of rejections
+  t <- 1 # Step 0: Initialise the number of iterations
+  temp_init <- temp # Save a copy of the initial temperature and starting position x.
+  while(1) # Repeat until max iterations reached and 
+  {
+    if(i == i_max)  return(list(A, i, t, x, x_init, temp)) # Step 1: Max iterations reached
+    if(d == d_max) # Step 2: Maximum rejections reached
+    {
+      temp <- temp_adjust(temp, option = "heat", type = annealing_type, t, temp_init) # Step 2: Reheat  
+      i <- i + 1 # Step 2: Increment epochs
+      c <- d <- 0 # Step 2: Reset acceptances and rejections 
+      if(i == i_max)  return(list(A, i, t, x, x_init, temp)) # Step 1: Max iterations reached
+    }
+    if(c == c_max) # Step 3: Maximum acceptances reached
+    {
+      temp <- temp_adjust(temp, option = "cool", type = annealing_type, t, temp_init) # Step 3: Cool
+      i <- i + 1 # Step 3: Increment epochs
+      c <- d <- 0 # Step 3: Reset acceptances and rejections
+      if(i == i_max)  return(list(A, i, t, x, x_init, temp)) # Step 1: Max iterations reached
+    }
+    x_prime <- generate_neighbour(x, temp, temp_init) # Step 4: Generate Neighbour x'
+    energy <- calculate_energy(A, x, x_prime) # Step 5: Calculate energy
+    rand <- runif(1) # Step 5: Get random number
+    if(min(1, exp(-energy/temp)) < rand) # Step 5: Random number > M.A. rule
+    {
+      d <- d + 1 # Step 5: Increment rejections
+      t <- t + 1 # Step 5: Increment iterations
+    }
+    if(min(1, exp(-energy/temp)) > rand)  # Step 6: Random number < M.A. rule
+    {
+      x <- x_prime # Step 6: Accept Neighbour
+      c <- c + 1 # Step 7: Increment acceptances
+      if(calculate_energy(A, x, x_prime, option = "A_x_tilde") == 0) # Step 8: Nondominated x
+      {
+        A <- accept_soln(A, x_prime) # Step 8: Insert into archive A
+        A <- discard_dom_solns(A) # Step 8: Remove all dominated solutions
+      }
+      t <- t + 1 # Step 9: Increment iterations
+    } # Step 6: End of if-loop
+  } # Step 9: Repeat while loop
+} 
+```
+
+\newpage
+
+## Performance investigation
+
+After testing a few different parameters, I found that the linear and logarithmic cooling schedules performed the worst for this specific problem. The geometric and exponential parameters seemed to perform similarly and I found it hard to decide which performed better. I also found that the starting temperature $T_o$ performed the best when I used the accept all strategy, which is concerned with setting the temperature to a high value in the start. This enables the algorithm to accept all non-improving solutions in the start, leading to a more refined exploration of the search scape. I implemented two methods to terminate the algorithm, namely a method which terminated the algorithm after a period with a very small number of acceptances, and a method which executed if the temperature reached $T_F = 0.01$. However, I found the most success with just letting the algorithm run for a pre-defined amount of iterations. This could have been due to my implementation being too strict, but I decided to continue with the pre-defined amount of epochs as the termination criterion. My algorithm's final parameters are displayed below. I gained some inspiration for these values from the article which proposed DBMOSA [Smith, Kevin & Everson, Richard & Fieldsend, Jonathan & Murphy, Chris & Misra, Ramnath. (2008). Dominance-Based Multiobjective Simulated Annealing. Evolutionary Computation, IEEE Transactions on. 12. 323 - 342. 10.1109/TEVC.2007.904345.]. 
+
+```{r}
+epochs <- 200 # Similar to as found in DBMOSA article
+accept <- reject <- 20 # As found in DBMOSA article
+temp <- 20 # Accept all
+annealing_type <- "exponential" # Cooling/reheating schedule
+```
+
+
+```{r fig.height=4, warning=F}
+# Investigate exponential -------------------------------------------------
+par(mfrow = c(1,2))
+results <- DBMOSA(i_max = epochs,
+                  c_max = accept, 
+                  d_max = reject,
+                  temp = temp, 
+                  annealing_type = annealing_type)
+plot_objective(results)
+plot_decision(results)
+print(displayResults(results))
+```
+
+
+The results are displayed above, and by using the functions that were declared a table is presented with the output information. First, the two relevant objective function values are displayed as **f1** and **f2**. The corresponding decision value is presented next to these objective function values under the label **x**. The total amount of epochs and iterations that were performed are displayed under **epoch** and **iter** respectively. The final decision value that was reached is also displayed under **final_x**, and the initial decision value is displayed under **init_x** and the final temperature is also displayed under **temp**. Therefore by inspecting the results, I believe this algorithm could have performed better in terms of spread and convergence. This will be improved by investigating three diversity preservation techniques, namely nearest-neighbour, histogram and kernel methods.
+
+\newpage
+
+
+
+
+# Diversity Preservation Techniques
+
+## Nearest-neighbour method
+
+The nearest-neighbour method is a method that is commonly employed to limit the loss of diversity in the neighbourhood functions of P-metaheuristics. This method deteriorates solutions that have high densities within the neighbourhood functions by using the crowding distance metric and the non-dominance ranking of the solutions. From what I gathered from the textbook by Talbi, the following flow applies to the nearest neighbour method, and I used it as a sort of pseudocode. Note this is called at each iteration of the algorithm when the neighbourhood function is called.
+
+1) Generate population with population size p
+2) Rank population according to non-dominance ranking
+3) Calculate crowding distance for solutions [circumference of rectangle containing neighbours]
+4) Perform a tournament selection, picking solutions randomly from population.
+5) Choose the highest non-dominated ranking.
+6) If more than one non-dominated solution exists within the best non-dominated rank, choose the neighbour with the highest crowding distance [this is the part that ensures diversity]
+
+The DBMOSA algorithm flow remained the same; the neighbourhood function is all that was adapted. The code is displayed below. I used a population size of 7 and a tournament size of 2. The population was generated with perturbations around the current solution, after which the crowding distance was calculated for each entry of the population and the original solution x by using the crowding_distance function from the emoa library. Thereafter, the objective function values were sorted by a function fastNonDominatedSorting available from the nsga2R library, which ranks non-dominated solutions for minimisation MOPs and returns a list containing the indices and their respective rankings. I then assigned these ranking to each entry of the dataframe from within a for loop, and then proceeded to perform touranament selection. A selection size of k entries was sampled without replacement and the corresponding entries were taken from the population to create the tourney variable. I then chose the variable from this tourney as the variable which exhibited the highest ranking. Since there may be more than one entry which has the maximum ranking, I then further specified that the variable chosen should have the maximum crowding distance that was calculated earlier. The combination of these two selections ensure that only one neighbour is returned, and the function then returns the generated neighbouring value.
+
+```{r}
+# NNM ---------------------------------------------------------------------
+generate_neighbour <- function(x, temp, temp_init)
+{
+  p <- 7 # Population size p
+  limits <- c(-10^2, 10^2) # Limits of perturbation
+  k <- 2 # Tournament selection size k
+  population <- x + runif(p, limits[1], limits[2]) # Generate new population
+  x_values = c(x, population) # Total population including original x
+  distances <- emoa::crowding_distance(matrix(x_values, ncol = p + 1)) # Crowding distances
+  population <- data.frame(x_values, distances) # Merge distances with x
+  population$ranking <- Inf # Initiaize ranking variable
+  ranking <- nsga2R::fastNonDominatedSorting(evaluate_objective(population$x_values)) # Returns ranking 
+  for(i in 1:length(ranking)) # Assigns the rank to indices
+  {
+    population[ranking[[i]],]$ranking <- i # Assigns the rank to indices
+  }
+  tourney <- population[sample.int(nrow(population), size = k),] # Sample k random population
+  tourney <- tourney[tourney$ranking == min(tourney$ranking),] # Select lowest ND ranking
+  tourney <- tourney[tourney$distances == max(tourney$distances),] # Select highest distance
+  x_new <- tourney[1,1] # Access x_value
+  return(x_new) # Return x_value
+}
+```
+
+
+```{r fig.height=4, warning=F}
+# Investigate NN ----------------------------------------------------------
+par(mfrow = c(1,2))
+results <- DBMOSA(i_max = epochs,
+                  c_max = accept, 
+                  d_max = reject,
+                  temp = temp, 
+                  annealing_type = annealing_type)
+plot_objective(results)
+plot_decision(results)
+print(displayResults(results))
+```
+
+\newpage
+
+## Histogram method
+
+The histogram method is another method that is employed to limit the loss of diversity when generating new neighbours. This method deteriorates solutions that have high densities, meaning they are bundled together; by applying partitions within the objective space. The neighbour will be selected as the best solution found within the most sparse partition of the search space. Note that there are applications which apply these histogram-like partitions to the decision space, but most applications seem to lean towards partitioning the objective space. Since this problem only contains one decision variable, I also partitioned the objective space as it seems more viable. By employing these partitions, the neighbourhood function allows for the encouragement of exploring diverse solutions. From what I gathered in the textbook by Talbi, the following four steps were set up.
+
+1) Generate population.
+2) Split population into partitions.
+3) Find most sparse partition that still contains entries.
+4) Output the neighbour as the best solution within this sparse partition.
+
+I implemented a partition size of 4, effectively splitting the objective space into 4 different areas as separated by the horizontal_split and vertical_split variables. I also implemented a population size of 50, with perturbations being limited within [-1000, 1000]. After splitting the quadrants, I ensured no quadrants are empty, and after removing any potential invalid quadrants I chose the smallest or most sparse quadrant, as denoted by least_dense_quad, to be the the partition that would provide the most diversification. In some cases, least_dense_quad only contained one entry, if which it returned the decision value of the corresponding point. However, if the point did contain more than one point, I chose the point with the highest non-dominance ranking by implementing the same function as before, fastNonDominatedSorting from the nsga2R library.
+
+
+```{r}
+# Histograms --------------------------------------------------------------
+generate_neighbour <- function(x, temp, temp_init)
+{
+  p <- 7 # Population size p
+  limits <- c(-10^3, 10^3) # Limits of perturbation
+  x <- x + runif(p, limits[1], limits[2]) # Generate new population
+  population <- evaluate_objective(x) # Find objective values
+  horizontal_split <- mean(population$f2) # Find horizontal split point
+  vertical_split <- mean(population$f1) # Find vertical split point
+  # Quadrants
+  upper_right <- subset(population, f1 > vertical_split & f2 > horizontal_split) 
+  lower_right <- subset(population, f1 > vertical_split & f2 < horizontal_split) 
+  upper_left <- subset(population, f1 < vertical_split & f2 > horizontal_split) 
+  lower_left <- subset(population, f1 < vertical_split & f2 < horizontal_split)
+  quadrants <- list(upper_right, lower_right, upper_left, lower_left) # Combine quadrants
+  sizes <- sapply(quadrants, nrow) # Get size of all quadrants
+  valid_idx <- which(sizes > 0) # Get all non-empty quadrants
+  quadrants <- quadrants[valid_idx] # Subset all non-empty quadrants
+  sizes <- sapply(quadrants, nrow) # Get size of all **valid** quadrants
+  least_dense_quad <- data.frame(quadrants[which.min(sizes)]) # Find most sparse quadrant
+  if(nrow(least_dense_quad) == 1) return(find_decision_val(least_dense_quad)) # Return decision value
+  ranking <- nsga2R::fastNonDominatedSorting(least_dense_quad) # If more than one entry
+  return(find_decision_val(least_dense_quad[ranking[[1]],])) # Return the non-domim decision value
+}
+```
+
+
+```{r fig.height=4, warning=F}
+# Investigate Hist --------------------------------------------------------
+par(mfrow = c(1,2))
+results <- DBMOSA(i_max = epochs,
+                  c_max = accept, 
+                  d_max = reject,
+                  temp = temp, 
+                  annealing_type = annealing_type)
+plot_objective(results)
+plot_decision(results)
+print(displayResults(results))
+```
+
+\newpage
+
+## Kernel method
+
+The kernel method is a method is employed to limit the loss of diversity when generating new neighbours. This method generates a population around solution i, and uses a kernel function to get an estimate on the density of solutions. Several variants of this method exist, and I employed the standard kernel method which uses the sum of the distance between the points as the kernel function to provide an estimation of the density of the solutions. Thereafter, the solution with the lowest density can be selected as the neighbour to output. From what I could gather from the textbook, the method works as follows.
+
+1) Generate population of perturbed points
+2) Find density estimate using distance between points
+3) Return the least dense solution
+
+I started the method by declaring a population size of 200, which are perturbations of the current solution. Thereafter, I evaluated the objective function and calculated the distances between the solutions to get an estimate on the density. I then chose the lowest density, which will aid to diversify the objective space and the function then outputs the corresponding decision value.  
+
+
+```{r}
+# Kernel methods ----------------------------------------------------------
+generate_neighbour <- function(x, temp, temp_init)
+{
+  p <- 200 # Population size p
+  limits <- c(-10^3, 10^3) # Limits of perturbation
+  x <- x + runif(p, limits[1], limits[2]) # Perturb points
+  population <- evaluate_objective(x) # Generate population
+  distance_matrix <- as.matrix(dist(x, diag = T, upper = T)) # Distance between solns
+  density_estimate <- rowSums(distance_matrix) # Density estimate of all solutions
+  x_new <- find_decision_val(population[which.min(density_estimate),]) # Choose lowest density
+  return(x_new) # Output neighbour
+}
+```
+
+```{r fig.height=4, warning=F}
+# Investigate kernel ------------------------------------------------------
+par(mfrow = c(1,2))
+results <- DBMOSA(i_max = epochs,
+                  c_max = accept, 
+                  d_max = reject,
+                  temp = temp, 
+                  annealing_type = annealing_type)
+plot_objective(results)
+plot_decision(results)
+print(displayResults(results))
+```
+
+
+
+# Conclusion
+
+The original DBMOSA algorithm could have performed better in my opinion, but after the inclusion of the diversity-based methods the performance was improven significantly. The nearest neighbour and kernel-based diversity preservation techniques can be seen to have a better spread and convergence than the original DBMOSA algorithm, and the histogram method seems to be worse than the other two methods. However, I confess that depending on the run of execution the histogram method might have even performed worse than the original DBMOSA algorithm. I reconciled myself by accepting that this is either due to my implementation of the horizontal and vertical quadrant-splitting planes, or it is due to the shape of the objective space being non-optimal for splitting into four quadrants with respect to the minimum and maximum objective values of the axes. I do believe that the nearest neighbour method performed the best as it had the best spread with the best convergence on the pareto front than all the other diversity-based methods and the original DBMOSA algorithm. The kernel method is a close second, and the third best performer is either the histogram method or the original DBMOSA method, depeneding on the seed of the execution.
+
+
+

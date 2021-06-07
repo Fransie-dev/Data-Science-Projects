@@ -1,0 +1,899 @@
+---
+title: "Post-Block Assignment 1: Option 1"
+author: 
+- "Francois van Zyl"
+- "18620426"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: pdf_document
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+full_report <- T
+perc_size <- 0.05 # Scratch; do full version
+hop_samp <- 0.05 # 4166
+# 0.25, 0.5, 1.0
+```
+
+## 1.1 Does Clustering Make Sense?
+
+To check whether this data set contains any underlying clusters, as opposed to simply being random points, I will consider two different measures. One of the most well-known measures of testing whether a data set contains underlying clusters is the Hopkins statistic. This statistic measures the probability that a data set was generated from a uniform data distribution, implying that no meaningful clusters exist within this data set. Quoting the provided textbook by Alboukadel Kassambara, it is calculated as the mean nearest neighbour distance in a random data set, divided by the sum of the mean nearest neighbour distances of our provided dataset and that of the randomly generated data set. The formula is displayed below, and a Hopkins statistic of approximately 0.5 means that the user-provided and randomly generated data sets are close together, implying that the provided data set is close to uniformly distributed and does not have any meaningful clusters. If the Hopkins statistic is close to zero, the null hypothesis that the provided data set is uniformly distributed can be rejected, and it is possible to conclude that the data set is clusterable. 
+
+$$H = \frac{\sum_{i=1}^n y_i}{\sum_{i=1}^n x_i + \sum_{i=1}^n y_i}$$
+&nbsp;
+
+Before applying this test to the provided data set, I first standardized the numeric variables within the data set to ensure that the features are comparable such that no feature will skew any future distance measures. To this end, I applied z-score normalization to the data set. This entailed subtracting the respective features' means and dividing these features by their respective standard deviations. 
+
+$$x' = \frac{x_i-\mu(x)}{\sigma(x)}$$
+
+A summary of the scaled data used for the two clustering tendency tests are displayed below. Note that the feature Gender is removed from the data set, as I implemented the euclidean distance measure which requires numeric data.
+
+&nbsp;
+
+```{r read_data, include = F}
+# Read data ---------------------------------------------------------------
+library(dplyr)
+library(cluster)
+library(factoextra)
+library(knitr)
+
+setwd("C:/Users/jd-vz/Desktop/MEng/Data Analytics/Post-Block 1/Post-block Assignment 1 Specifications-20201202")
+data <- readxl::read_xlsx("abaloneCleaned.xlsx") %>% data.frame() %>% na.omit() 
+data$Gender <- as.factor(data$Gender)
+sapply(data, class)
+sapply(data, anyNA)
+head(data, 5)
+
+# Find scaled data --------------------------------------------------------
+if(exists('data_scaled')) remove(data_scaled)
+data_scaled <- data 
+data_scaled[,-1] <- scale(data[,-1], center = T, scale = T) # Standardize the numeric variables
+data_scaled[,1] <- as.factor(data_scaled[,1])
+```
+
+```{r calc_hop, echo = F, warning = F, eval=full_report}
+# Visual assessment of cluster tendency -----------------------------------
+# Red: High similarity / low dissimilarity
+# Blue: Low similarity / high dissimilarity
+# 5, 6, 7 best so far
+# Takes 10 min for full thing
+
+seed_val <- 6
+
+
+# Hopkins statistic -------------------------------------------------------
+set.seed(seed_val)
+sample_size <- hop_samp*nrow(data)
+hop_stat <- clustertend::hopkins(data_scaled[,-1], n = sample_size) # far below threshold of 0.5
+# TODO talk about sample size & removal of Gender
+```
+
+```{r calc_dist_viz, echo = F, eval = full_report, warning = F}
+# Take 2 ------------------------------------------------------------------
+set.seed(seed_val)
+sample_size <- perc_size*nrow(data_scaled) 
+ss <- sample(nrow(data_scaled), sample_size) # Random rows
+dist_viz <- factoextra::fviz_dist(factoextra::get_dist(data_scaled[ss,], method = "euclidean"),
+                                  order = T, show_labels = F, gradient = list(low = "red",
+                                                                              mid = "white",
+                                                                              high = "blue")) +
+  ggplot2::labs(title = paste("ODI Scaled Abalone Data; Sample Percentage: ", 
+                              paste0(100*perc_size, "%")))
+```
+
+
+```{r display_scale_data, echo=F, eval = T}
+num_feat <- colnames(data[2:ncol(data)])  
+cutp <- length(num_feat)/2
+t1 <- summary(data_scaled[,c(num_feat[1:(cutp)])]) %>% knitr::kable(caption = "Descriptive Statistics [z-score normalized data]")
+t2 <- summary(data_scaled[,num_feat[(cutp+1):length(num_feat)]]) %>% knitr::kable()
+t1
+```
+
+\newpage
+
+```{r echo = F}
+t2
+```
+
+
+To calculate the Hopkins statistic, I implemented a random sample size of `r paste0(100*hop_samp, "%")` of the entries within the data set. The calculated Hopkins statistic on the standardized abalone data is displayed below, and when we recall that a value close to zero implies that the null hypothesis of the data being uniformly distributed can be rejected, it is possible to conclude that the data set is clusterable. 
+
+```{r get_hop, echo = F, eval=full_report}
+hop_stat <- hop_stat$H
+hop_stat %>% knitr::kable(caption = paste("Calculated Hopkins Statistic; Sample Percentage: ", paste0(100*hop_samp, "%")), col.names = "H")
+```
+
+After inspecting a statistical method of assessing the clustering tendency, I proceeded to investigate a visual method, namely the Visual Assessment of Cluster Tendency Algorithm (VAT). This algorithm computes the dissimilarity matrix of the entire data set by a specified distance measure, and then reorders this dissimilarity matrix into a heatmap called an ordered dissimilarity image (ODI). This ODI allows for a convenient visual investigation of the data set's clustering tendencies by looking for areas which are defined by borders of high dissimilarity. To construct this ODI, I implemented the euclidean distance measure with a random sample size of `r paste0(100*perc_size, "%")` of the entries within the data set. In this ODI the color red represents areas with high similarity, or low dissimilarity, and the color blue represents areas with low similarity, or high dissimilarity. When inspecting the ODI's diagonal, we can see that there is some underlying cluster structure to this data set as there are two distinguished clusters of high similarity at the lower-left and upper-right ends of the diagonal. These clusters are separated by borders of high dissimilarity. After seeing this ODI, my initial thoughts lead me to believe that this data set contains two meaningful clusters. However, further tests will be performed to test the optimal number of clusters at a later stage. The combined results of these two measures indicate that cluster analysis should be continued on this data set. Finally, this might seem redundant to mention, but I also noted that when inspecting the levels of similarity this data set does not contain perfectly separated boundaries of dissimilarity, especially for the upper-right cluster, and concluded one can expect this for most data sets. 
+
+
+```{r show_graph, eval=full_report, echo=F, fig.height=2.5}
+dist_viz
+```
+
+
+\newpage
+
+## 1.2 Data Clustering
+
+```{r original_plot, eval = T, echo = F, fig.height=6, fig.width=8}
+# Plot data ---------------------------------------------------------------
+num_feat <- colnames(data[2:ncol(data)])  
+cat_feat <- colnames(data[1])  
+
+par(mfrow=c(3,3))
+for(i in 1:length(num_feat)) hist(data[,num_feat[i]], main=num_feat[i], col = "gray",
+                                  xlab = "Values", ylab = "Frequency")
+for(i in 1:length(cat_feat)) plot(data[,cat_feat[i]], main=cat_feat[i],
+                                  xlab = "Category", ylab = "Frequency")
+
+# Summarize Data ----------------------------------------------------------
+cutp <- length(num_feat)/2
+summary(data[,c(cat_feat, num_feat[1:(cutp)])]) %>% knitr::kable(caption = "Descriptive Statistics [Original data]")
+summary(data[,num_feat[(cutp+1):length(num_feat)]]) %>% knitr::kable()
+```
+
+\newpage
+
+
+Before deciding on a clustering algorithm, I wanted to briefly investigate the data set to get a better understanding of the characteristics of the data set. To this end, a brief data visualization and feature descriptive statistics are displayed on the previous page. Please note that these visualizations and statistics describe the original data set, and therefore it differs from the data used for the Section *1.1*. 
+
+### 1.2.1 Clustering Algorithm
+
+As we are looking to identify k groups based on their similarity, partitional clustering methods seemed to be the most intuitive choice. The two most well-known partitional clustering algorithms are K-means and K-mediods. Both K-means and K-mediods initialize k centroids, then repeatedly assign the data points to the closest centroid, after which it recomputes the centroid of the clusters. This assignment and centroid recomputation phase repeats until no further change is visible within the centroids of the clusters. The centroids are initially randomly selected, and the closest centroid is defined as the centroid with the smallest distance measure towards it. The distinction between k-means and k-mediods is in the way that these cluster centroids are recalculated. 
+
+In k-means, the cluster centroids are recalculated as the arithmetic mean value of all the data points belonging to a cluster. In k-mediods, the cluster centroids, or cluster mediods, are recalculated as the most centrally located points which improve the cost function. Due to this distinction, k-mediod clustering algorithms are less sensitive to outliers, as they do not operate on arithmetic means, but instead the actual data points. When inspecting the visualizations and statistics on the previous page, we can see that there are multiple skewed distributions and outliers within the data set. The feature Height seems to have the worst outliers, and most of the other features seem to have skewed distributions. For this reason, I believe k-mediods would be a suitable clustering algorithm choice and proceeded to select the PAM algorithm (Partitioning Around Medoids) as my choice of a clustering algorithm.
+
+Quoting the provided textbook by Alboukadel Kassambara, the PAM algorithm searches for k mediods within a dataset, constructing initial clusters by assigning observations to each initial mediod, after which each mediod is swapped with non-mediod points and the objective function is calculated for each potential swap. The objective function relates to the sum of the dissimilarities of all data points to the closest mediod, and the swap that minimizes the objective function the most is selected as the new mediod. This swapping phase is continued until the objective function cannot be decreased any further. A more structured explanation of this algorithm is displayed below.
+
+1. Initialize k data points to become mediods, either randomly or from user-defined values.
+2. Calculate dissimilarity matrix using specified distance metric [typically: euclidean, manhattan]
+3. Using this dissimilarity matrix, assign data points to the closest mediod
+4. For all k clusters, search for data points that decrease the average dissimilarity coefficient and, if found, accept the data point with the largest decrease in the average dissimilarity coefficient as the new mediod.
+5. If any mediod has been updated, return to step 3. Otherwise, terminate the algorithm.
+
+\newpage
+
+### 1.2.2 Features Used and Data Transformation 
+
+#### 1.2.2.1 Features Used 
+
+Before normalizing the data, I discarded the Gender feature from the data set, as categorical variables are not applicable with the euclidean distance measures. I then investigated the correlation matrix as seen in Table 6 to identify any remaining redundant features in the data set. I found no uncorrelated features, and I left the data set as is. No further tests were performed to remove any features.
+
+```{r corr_mat, echo = F, eval = T}
+mcor<-round(cor(data[,-1]), 2)
+# Hide upper triangle
+upper<-as.data.frame(mcor)
+rownames(upper) <- c("Length", "Diameter", "Height", "Whole Weight", "Shucked Weight", "Viscera Weight", "Shell Weight", "Rings")
+upper %>% knitr::kable(col.names = c("Length", "Diameter", "Height", "Whole Weight", "Shucked Weight", "Viscera Weight", "Shell Weight", "Rings"),
+                       align = "r", caption = "Correlation Matrix")
+```
+
+
+
+```{r eval = T, echo = F}
+# Note, skip for now
+# Remove Outliers ---------------------------------------------------------
+# Note: From original data
+remove_outliers<-function(num_col)
+{
+  qnt<-quantile(num_col, probs=c(.25, .75), na.rm = T)
+  upper_lim<-qnt[2]+1.5*IQR(num_col)
+  lower_lim<-qnt[1]-1.5*IQR(num_col)
+  for(i in 1:length(num_col)){
+    if(num_col[i] > upper_lim && !is.na(num_col[i])) num_col[i] <- NA
+    if(num_col[i] < lower_lim && !is.na(num_col[i])) num_col[i] <- NA
+  }
+  return(num_col)
+}
+
+out_col <- colnames(data)[-1]
+data_no_out <- data
+for(i in 1:length(out_col)) data_no_out[,out_col[i]]<-remove_outliers(data_no_out[,out_col[i]])
+data_no_out <- data_no_out[complete.cases(data_no_out),]
+```
+
+
+```{r transformed_plot, eval = T, echo = F, fig.height=6, fig.width=8}
+# Find scaled data --------------------------------------------------------
+# Min max normalization ---------------------------------------------------
+norm_minmax <- function(x){
+  (x- min(x)) /(max(x)-min(x))
+}
+minmax_data <- data.frame(lapply(data_no_out[,-1], norm_minmax))
+
+
+# Unit length -------------------------------------------------------------
+unit_length <- function(x) {
+  x / sqrt(sum(x^2))
+}
+
+unit_data <- as.data.frame(lapply(data_no_out[,-1], unit_length))
+
+# Z-score normalization ---------------------------------------------------
+z_data <- as.data.frame(lapply(data[,-1], scale))
+
+
+# Robust Scalara ----------------------------------------------------------
+robust_scalar<- function(x){(x- median(x)) /(quantile(x,probs = .75)-quantile(x,probs = .25))}
+rb_data <- as.data.frame(lapply(data[,-1], robust_scalar))
+
+```
+
+
+```{r echo = F, warning=F, message = F, eval = full_report}
+library(clValid)
+set.seed(20)
+clmethods <- c("pam")
+min_max_intern <- clValid(minmax_data,
+                          nClust = 2:6,
+                          clMethods = clmethods,
+                          validation = c("internal"),
+                          metric = "euclidean",
+                          maxitems = 5000)
+
+t_min_max_2 <- optimalScores(min_max_intern) %>% knitr::kable(caption = "PAM best measures obtained [min-max]")
+t_min_max_1 <- measures(min_max_intern) %>% knitr::kable(caption = "PAM internal measures over varying k [min-max]",
+                                                         col.names = paste("k = ", 2:6))
+
+unit_intern <- clValid(unit_data,
+                       nClust = 2:6,
+                       clMethods = clmethods,
+                       validation = c("internal"),
+                       metric = "euclidean",
+                       maxitems = 5000)
+
+t_unit_2 <-optimalScores(unit_intern) %>% knitr::kable(caption = "PAM best measures obtained [unit]")
+t_unit_1 <-measures(unit_intern) %>% knitr::kable(caption = "PAM internal measures over varying k [unit]",
+                                                  col.names = paste("k = ", 2:6))
+
+z_intern <- clValid(z_data,
+                    nClust = 2:6,
+                    clMethods = clmethods,
+                    validation = c("internal"),
+                    metric = "euclidean",
+                    maxitems = 5000)
+
+t_z_2 <- optimalScores(z_intern) %>% knitr::kable(caption = "PAM best measures obtained [z-score]")
+t_z_1 <- measures(z_intern) %>% knitr::kable(caption = "PAM internal measures over varying k [z-score]",
+                                             col.names = paste("k = ", 2:6))
+
+rob_intern <- clValid(rb_data,
+                      nClust = 2:6,
+                      clMethods = clmethods,
+                      validation = c("internal"),
+                      metric = "euclidean",
+                      maxitems = 5000)
+
+t_r_2 <- optimalScores(rob_intern) %>%  knitr::kable(caption = "PAM best measures obtained [robust scalar]")
+t_r_1 <- measures(rob_intern) %>%  knitr::kable(caption = "PAM internal measures over varying k [robust scalar]",
+                                                col.names = paste("k = ", 2:6))
+```
+
+#### 1.2.2.2 Data Transformation
+
+Despite the PAM algorithm being more robust to outliers than k-means, it is not immune to being skewed by outliers. For this reason, either a robust normalization technique should be used or the outliers should be identified and removed from the data set. All considered normalization techniques will ensure that the implemented euclidean distance measure will not be skewed by different units and scales between the data set's features. I considered four normalization techniques, and investigated the resulting clustering performance across $k \in [2, 6]$. The clustering performance will be evaluated by three measures: the resulting clusters' connectivity, Dunn index, and average silhouette width. The meaning of these three measures are discussed in the next section, *1.2.2*, and for now it should only be noted that we are attempting to minimize the connectivity, whilst simultaneously maximizing the average silhouette width and Dunn index. The formula used and the relevant scores achieved across these three performance measures are displayed for each normalization technique, as well as the highest obtained scores in each measure across $k \in [2, 6]$. I first considered the z-score and robust scalar normalization techniques. Both these methods are considered robust to outliers. For these two methods, I did not apply any outlier removal technique to the original data set. The results for the z-score normalized clustering are displayed in Table 7 and 8. 
+
+$$x' = \frac{x_i-\mu(x)}{\sigma(x)}$$ 
+
+```{r eval=full_report, echo=F}
+t_z_1
+t_z_2
+```
+
+
+It can be seen that the clustering with the z-score normalized data set performed the best at $k = 2$ for all considered measures. I proceeded to investigate the robust scalar normalization technique, and the results are displayed in Table 9 and 10.
+
+$$x' = \frac{x-median(x)}{Q_{3rd}(x) - Q_{1st}(x)}$$
+
+```{r eval=full_report, echo=F}
+t_r_1
+t_r_2
+```
+
+As seen above, the robust scalar normalization technique performed worse than the z-score normalization technique in every measure except the connectivity. After investigating these two techniques, I proceeded to investigate min-max scaling. This normalization technique is sensitive to outliers, and prior to applying it to the data set I needed to remove the outliers from the data set. I therefore applied an outlier removal technique to the original data set. I elected to use the interquartile method to identify the outliers, in which any points falling outside 1.5 times the interquartile range are identified as an outlier and removed from the data set. This outlier removal technique was applied to all the features in the data set. The results are displayed on the next page in Table 11 and 12. This method can be seen to perform the best thus far in all three considered internal measures. 
+
+$$x' = \frac{x-min(x)}{max(x) - min(x)}$$
+
+\newpage
+
+```{r eval=full_report, echo=F}
+t_min_max_1
+t_min_max_2
+```
+
+The final normalization technique considered was that of unit scaling. This normalization technique is also sensitive to outliers, and I applied the interquartile outlier detection method in the same manner as that of the min-max normalization technique. The results are displayed below in Table 13 and 14. The unit scaling normalization technique performed better than the min-max normalization technique in the connectivity and average silhouette width measures and slightly worse in the Dunn index measure.
+
+$$x' = \frac{x}{||x||}$$
+
+```{r eval=full_report, echo=F}
+t_unit_1
+t_unit_2
+```
+
+To conclude, despite robust scaling and z-score normalization being robust to outliers, the unit scaled clustering approach ultimately performed the best of all considered normalization techniques. I therefore selected unit scaling as the appropriate normalization technique, and a brief visualization and descriptive statistics of the data to be used is displayed on the next page. Once again, the outliers were removed from the dataset by the interquartile method before applying unit length scaling.
+
+\newpage
+
+
+
+```{r eval=T, echo = F,fig.height=6, fig.width=8}
+# Plot data ---------------------------------------------------------------
+data_scaled <- unit_data
+num_feat <- colnames(data_scaled)  
+par(mfrow=c(3,3))
+
+for(i in 1:length(num_feat)) hist(data_scaled[,num_feat[i]], main=num_feat[i], col = "gray",
+                                  xlab = "Values", ylab = "Frequency")
+
+# Summarize Data ----------------------------------------------------------
+cutp <- length(num_feat)/2
+summary(data_scaled[,num_feat[1:(cutp)]]) %>% knitr::kable(caption = "Descriptive Statistics [Unit-length normalized data]")
+summary(data_scaled[,num_feat[(cutp+1):length(num_feat)]]) %>% knitr::kable()
+```
+
+
+\newpage
+
+### 1.2.2 Optimal number of clusters
+
+```{r estimate_cluster, echo = F, warning = F, message=F, fig.height=2.5, eval = full_report}
+# Direct method: Silhouette -----------------------------------------------
+dir_sil <- fviz_nbclust(data_scaled, pam, method = "silhouette") + theme_classic()
+
+# Direct method: Elbow ----------------------------------------------------
+dir_el <- fviz_nbclust(data_scaled, pam, method = "wss") + geom_vline(xintercept = 2, linetype = 2)
+
+# Statistical method: Gap Stat --------------------------------------------
+load(file = "gap_pam_1.RData")
+stat_gap <- fviz_gap_stat(gap_stat = res_gap_1)
+```
+
+To find the optimal number of clusters for this application, I considered two direct methods and one statistical method. The direct methods I considered were the average silhouette and elbow methods, and both of these methods are concerned with optimizing a global clustering criterion. The average silhouette method seeks to maximize the average silhouette width of the clustering across different values of k. This so-called silhouette width coefficient measures the distances between the points in the clusters, and therefore this method aims to maximize the separation between the different cluster centers by maximizing the average silhouette width. A larger average silhouette width implies a better separation between the clusters, and therefore higher inter-cluster distances.
+
+However, we can recall that the objective function of partitional clustering algorithms typically aim to minimize intra-cluster distances (i.e. find compact clusters) as well as to maximize inter-cluster distances (i.e. find well-separated clusters). Therefore, the average silhouette method is not sufficient by itself as it does not consider the minimization of the intra-cluster distances. To this end, I will consider the elbow method. This elbow method considers the minimization of the total intra-cluster variation, or total within-cluster sum of squares (WSS) across different values of k. Therefore, to achieve compact clusters, the so-called bend/knee in the WSS plot is considered as an indication of the optimal number of clusters. 
+
+The results for the two direct methods are displayed below. The average silhouette width can be seen to be at a maximum of $k = 2$, and the WSS is at a minimum at $k = 2$. These methods therefore suggest two clusters as the optimal number of clusters for maximizing inter-cluster distances and minimizing intra-cluster distances.
+
+I also considered the gap statistic method and, quoting the class slides provided to us, this statistical approach compares the total within intra-cluster variation for different values of k with their expected values under null reference distribution of the data, and therefore the value of k that maximizes this gap statistic is the estimate of the optimal number of clusters. The results for this statistical method is displayed below, and it can be seen to be at a maximum of $k = 6$, which disagrees with what was found in the previous two methods. 
+
+&nbsp;
+
+```{r plot_dir_el, echo = F, warning = F, message=F, fig.height=2, eval = full_report, fig.width=3}
+par(mfrow=c(1,3))
+dir_sil
+dir_el
+stat_gap
+```
+
+\newpage
+
+As two final internal measures for cluster validation, I investigated the cluster connectivity and Dunn index. The cluster connectivity is a minimization criterion that measures to what extent data points are placed in the same cluster as their nearest neighbors, and the Dunn index is a maximization criterion that represents the ratio of the minimum inter-cluster distance and the maximum intra-cluster distance. The cluster connectivity and average silhouette width are at their respective minimums and maximums at $k = 2$, yet for the Dunn Index the clustering approach performed slightly better at $k = 5$. However, by majority rule, I selected $k = 2$ as the optimal number of clusters and proceeded to investigate the cluster descriptive statistics.
+
+&nbsp;
+
+```{r summ_cl_valid, echo = F, warning = F, message=F, eval = full_report, fig.height=5}
+library(clValid)
+set.seed(20)
+clmethods <- c("pam")
+intern <- clValid(data_scaled,
+                  nClust = 2:6,
+                  clMethods = clmethods,
+                  validation = c("internal"),
+                  metric = "euclidean",
+                  maxitems = 5000)
+measures(intern)[,,1] %>% knitr::kable(caption = "PAM internal measures over varying k", col.names = c(paste("k = ", 2:6)))
+optimalScores(intern) %>% knitr::kable(caption = "Best achieved PAM internal measures")
+```
+
+
+\newpage
+
+### 1.2.3 Cluster Descriptive Statistics
+
+
+```{r echo = F, warning = F, message=F}
+set.seed(20)
+k_pam <- factoextra::eclust(data_scaled, "pam", k = 2, graph = F)
+k_stats <- fpc::cluster.stats(dist(data_scaled), k_pam$clustering)
+
+data.frame(Cluster = 1:2, Entries = k_stats$cluster.size) %>% knitr::kable(caption = "Entries in different clusters")
+
+
+# Cluster centroids -------------------------------------------------------
+unit_scaled_med <- k_pam$medoids
+unit_scaled_med <- data.frame(k_pam$medoids)
+row.names(unit_scaled_med) <- 1:2
+unit_scaled_med %>% knitr::kable(caption = "Cluster centroids [Scaled]",
+                                 col.names = c("Length", "Diameter", "Height", "Whole Weight", "Shucked Weight", "Viscera Weight", "Shell Weight", "Rings"))
+
+std_scale_med <- data_no_out[prodlim::row.match(unit_scaled_med, data_scaled), ]
+row.names(std_scale_med) <- 1:2
+std_scale_med[,-1] %>% knitr::kable(caption = "Cluster centroids [Unscaled]",
+                                    col.names = c("Length", "Diameter", "Height", "Whole Weight", "Shucked Weight", "Viscera Weight", "Shell Weight", "Rings"))
+```
+
+Table 19 illustrates how many entries are within each cluster, and Table 20 and 21 illustrate the cluster centroids in their respective scaled and unscaled forms. We can note that the centroid values for length, diameter, whole weight, shucked weight, viscera weight, and shell weight are quite different. To further investigate the types of ranges the features can take, I investigated some descriptive statistics of the features within the two different clusters. 
+
+```{r echo = F, warning = F, message=F}
+data_cc <- data_no_out[,-1]
+data_cc$cluster <- as.factor(k_pam$clustering) 
+
+summary(data_cc[data_cc$cluster == 1,-9]) %>% knitr::kable(caption = "Descriptive Statistics: Cluster 1 [Unscaled]", 
+                                                           col.names = c("Length", "Diameter", "Height", "Whole Weight", "Shucked Weight", "Viscera Weight", "Shell Weight", "Rings"))
+```
+
+\newpage
+
+```{r echo = F, warning = F, message=F}
+summary(data_cc[data_cc$cluster == 2, -9]) %>%  knitr::kable(caption = "Descriptive Statistics: Cluster 2 [Unscaled]",
+                                                             col.names = c("Length", "Diameter", "Height", "Whole Weight", "Shucked Weight", "Viscera Weight", "Shell Weight", "Rings"))
+```
+
+```{r echo = F}
+data_no_out$cluster <- as.factor(k_pam$clustering) 
+clus_1 <- data_no_out[data_no_out$cluster == 1, ]
+clus_2 <- data_no_out[data_no_out$cluster == 2, ]
+data.frame(summary(clus_1$Gender), summary(clus_2$Gender)) %>% knitr::kable(col.names = c("Cluster 1", "Cluster 2"))
+```
+
+When inspecting the above tables, my initial thoughts lead me to believe that this clustering solution will be distinguished by the length, diameter, whole weight, shucked weight, viscera weight, and shell weight features. This is because their centroid locations and ranges that these features assume within the two clusters are quite different with some distinct boundaries that will be discussed later. I noticed that the target feature, Rings, does not seem to be as informative for the clustering as the other features since it's range of values are quite similar across both clusters. However, this will all be investigated at a later stage. The gender feature provides a great deal of distinguishment between the clusters, and when inspecting the distribution of genders across the clusters we can note that these clusters seem to be characterised mostly by adult and infant abalones as the clusters are dominated by the two separate age groups. Once again, Gender was reinserted into the dataset, and was not used in the actual clustering solution.
+
+```{r echo = F, warning = F, message=F}
+m_1 <- pracma::Mode(data_cc$Rings[data_cc$cluster == 1])
+m_2 <- pracma::Mode(data_cc$Rings[data_cc$cluster == 2])
+modes <- data.frame(m_1, m_2)
+row.names(modes) <- "Rings:"
+modes %>% knitr::kable(caption = "Ring Modes for Clusters [Unscaled]", col.names = paste("Cluster: ", 1:2))
+```
+
+Table 25 illustrates the modes that were calculated for the target feature in each cluster. I noted that the calculated modes were exactly the same as the cluster centroids, as seen in Table 21. Table 26 shows some descriptive statistics of the clusters. Note that these statistics are still in the respective scaled form. The maximum, average and median within cluster distances are shown, and it can be seen that the second cluster is larger than the first cluster. However, when referring back to Table 19 we can note that there are actually less data points in this cluster, implying it is less compact than the first cluster. Similarly, the minimum and average distances between points in the separate clusters are displayed. It can be seen that at least one of the cluster points are quite close to each other, as the clusterwise minimum distance between the separate clusters are very low. However, the clusterwise average distance between the separate clusters indicate that most of the points seem to be situated significantly further from each other than this separate clusterwise minimum distance. 
+
+
+
+```{r descriptive_statistics, echo=F}
+nms <- c("Maximum within cluster distances/diameters",
+         "Clusterwise within cluster average distances",
+         "Clusterwise within cluster median distances",
+         "Clusterwise minimum distances of the separate clusters",
+         "Clusterwise average distances of the separate clusters",
+         "Cluster average silhouette widths",
+         "Widest within cluster gaps")
+
+vals_1 <- c(k_stats$diameter[1],
+            k_stats$average.distance[1],
+            k_stats$median.distance[1],
+            k_stats$separation[1],
+            k_stats$average.toother[1],
+            k_stats$clus.avg.silwidths[1],
+            k_stats$cwidegap[1])
+vals_2 <- c(k_stats$diameter[2],
+            k_stats$average.distance[2],
+            k_stats$median.distance[2],
+            k_stats$separation[2],
+            k_stats$average.toother[2],
+            k_stats$clus.avg.silwidths[2],
+            k_stats$cwidegap[2])
+data.frame(nms, vals_1, vals_2) %>% knitr::kable(caption = "Descriptive statistics: Part 1 [Scaled data]",
+                                                 col.names = c("Measure", "Cluster 1", "Cluster 2"))
+```
+
+
+Furthermore, the cluster average silhouette widths are displayed and when recalling the meaning of silhouette widths from Section $1.2.2$ it can be seen that the first cluster has a better separation than the second cluster. The widest cluster gaps are also shown, and are quite similar across both clusters.
+
+```{r descriptive_statistics2, echo=F}
+
+nms <- c("Dunn",
+         "Dunn 2",
+         "Entropy of Cluster Membership",
+         "Average within/between ratio",
+         "Calinski and Harabasz index",
+         "Separation Index"
+)
+vls <- c(k_stats$dunn,
+         k_stats$dunn2,
+         k_stats$entropy,
+         k_stats$wb.ratio,
+         k_stats$ch,
+         k_stats$sindex
+)
+data.frame(nms, vls) %>% knitr::kable(caption = "Descriptive statistics: Part 2 [Scaled data]")
+
+
+
+```
+
+Table 15 displays some more detailed cluster statistics, the first of which is the Dunn index, calculated firstly as previously mentioned. $$\frac{Minimum Separation}{Maximum Diameter}$$ This measure is followed by a lesser known dunn index variant calculated as follows. $$\frac{Minimum Average Dissimilarity }{Maximum Average Dissimilarity}$$ In this variant, the minimum dissimilarity is calculated between the two clusters, and the average dissimilarity is calculated within the separate clusters. Furthermore, the entropy of the distribution of cluster memberships, the average within/between ratios, the Calinski and Harabasz index, and the separation index are also displayed.
+
+
+
+\newpage
+
+
+
+## 1.3 Cluster Visualization
+
+
+### 1.3.1 Cluster Plot
+
+
+```{r viz_clust, echo = F, warning = F, message=F, fig.height=4, eval = full_report}
+factoextra::fviz_cluster(k_pam, geom = "point", ellipse.type = "convex",
+                         palette = "jco", ggtheme = theme_minimal())
+# choose vars
+```
+
+A visualization of the cluster is displayed above. The function used, *factoextra::fviz_cluster()*, performs PCA to reduce the dimensionality of the data such that it can be visualized in a 2D plot by using the first two principal dimensions. It can be seen that the first principal dimensions accounts by far the most of the data set's variability with 86.4% explanation. There seems to be some overlap which will be considered in Section *1.4*.
+
+\newpage
+
+### 1.3.2 Cluster Scatterplot Matrix
+
+The cluster scatterplot matrix is displayed below where Cluster 1 is highlighted in red, and Cluster 2 is highlighted in blue. In addition to illustrating the clusters formed across the descriptive features used in the clustering algorithm, I re-inserted Gender into the data set and included a newly created cluster feature which simply represented the allocated cluster. These two features were inserted into the data set to aid with visualization and rule extraction in Section $1.4$, and their respective columns can be seen at the left columns and bottom rows. The descriptive features actually used in the clustering are Length, Diameter, Height, Whole Weight, Shucked Weight, Viscera Weight, Shell Weight, and Rings.
+
+```{r splom, eval = full_report, echo=F, fig.height=15, fig.width=15, message=FALSE, warning=FALSE, results="show"}
+data_cc <- data_no_out
+data_cc$cluster <- as.factor(k_pam$clustering) 
+GGally::ggpairs(data_cc, mapping = aes(colour = cluster, alpha = 0.6), title="Pairs plot: Unscaled, clustered dataset with Gender and Cluster included") + theme_grey(base_size = 10)
+```
+
+\newpage
+
+
+\newpage
+
+### 1.3.3 Cluster Histogram Plot
+
+```{r echo = F, warning=F, message=F}
+
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+  
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+
+```{r echo = F, warning=F, message=F, fig.height=40, fig.width=60, eval = T}
+library(ggplot2)
+library(gridExtra)
+alpha_level <- 0.7 #0.4
+data_cc$Rings <- as.factor(data_cc$Rings)
+p1 <- ggplot(data_cc) + geom_histogram(position = "identity", aes(x=Length, fill=cluster), bins = 30, alpha = alpha_level) +
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))  
+p2 <- ggplot(data_cc) + geom_histogram(position = "identity",aes(x=Diameter, fill=cluster), bins = 30, alpha = alpha_level) +
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))  
+p3 <- ggplot(data_cc) + geom_histogram(position = "identity",aes(x=Height, fill=cluster), bins = 30, alpha = alpha_level) +
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))   
+p4 <- ggplot(data_cc) + geom_histogram(position = "identity",aes(x=Whole.weight, fill=cluster), bins = 30, alpha = alpha_level) +
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))    
+p5 <- ggplot(data_cc) + geom_histogram(position = "identity",aes(x=Shucked.weight, fill=cluster), bins = 30, alpha = alpha_level) +
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))    
+p6 <- ggplot(data_cc) + geom_histogram(position = "identity",aes(x=Viscera.weight, fill=cluster), bins = 30, alpha = alpha_level) +
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))    
+p7 <- ggplot(data_cc) + geom_histogram(position = "identity",aes(x=Shell.weight, fill=cluster), bins = 30, alpha = alpha_level) +
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 12))   
+# p8 <- ggplot(data_cc) + geom_histogram(aes(x=Gender, fill=Rings), bins = 30, alpha = 0.4) +
+#     theme(legend.position="none")  
+# 
+# p9 <- ggplot(data_cc) + geom_histogram(aes(x=Shell.weight, fill=Rings), bins = 30, alpha = 0.4) +
+#     theme(legend.position="none")  
+
+
+p_test <- ggplot(data_cc) + geom_histogram(aes(x=Shell.weight, fill=Rings), bins = 30, alpha = 0.4) +
+  theme(legend.text = element_text(size = 30),
+        legend.title = element_text(size=30),
+        legend.key.height= unit(2, 'cm'),
+        legend.key.width= unit(4, 'cm'))
+# p8 <- ggplot(data_cc) + geom_histogram(aes(x=Shell.weight, fill=Rings), bins = 30, alpha = 0.4) +
+#     theme(legend.position="bottom",
+#           legend.text = element_text(size = 10))  
+#           
+# multiplot(p1, p2, p3, p4, p5, p6, p7, p8, cols=2)
+
+extract_legend <- function(my_ggp) {
+  step1 <- ggplot_gtable(ggplot_build(my_ggp))
+  step2 <- which(sapply(step1$grobs, function(x) x$name) == "guide-box")
+  step3 <- step1$grobs[[step2]]
+  return(step3)
+}
+
+shared_legend <- extract_legend(p_test)
+# Draw plots with shared legend
+# grid.arrange(arrangeGrob(p1, p2, p3, p4, p5, p6, p7, ncol = 6),
+#              shared_legend, 
+#              nrow = 2,
+#              heights = c(100,1))
+
+```
+
+```{r echo = F, warning=F, message=F, fig.height=15, fig.width=60, eval = T}
+p8 <- ggplot(data_cc) + # 80,60
+  geom_histogram(aes(x=Length, fill=Rings), bins = 30, alpha = alpha_level) +
+  facet_wrap(~Rings,nc=1) +
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 20))  
+p9 <- ggplot(data_cc) +
+  geom_histogram(aes(x=Diameter, fill=Rings), bins = 30, alpha = alpha_level) +
+  facet_wrap(~Rings,nc=1)+
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 20))   
+p10 <- ggplot(data_cc) +
+  geom_histogram(aes(x=Height, fill=Rings), bins = 30, alpha = alpha_level) +
+  facet_wrap(~Rings,nc=1)+
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 20))   
+p11 <- ggplot(data_cc) +
+  geom_histogram(aes(x=Whole.weight, fill=Rings), bins = 30, alpha = alpha_level) +
+  facet_wrap(~Rings,nc=1)+
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 20))   
+p12 <- ggplot(data_cc) +
+  geom_histogram(aes(x=Shucked.weight, fill=Rings), bins = 30, alpha = alpha_level) +
+  facet_wrap(~Rings,nc=1)+
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 20))   
+p13 <- ggplot(data_cc) +
+  geom_histogram(aes(x=Viscera.weight, fill=Rings), bins = 30, alpha = alpha_level) +
+  facet_wrap(~Rings,nc=1)+
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 20))   
+p14 <- ggplot(data_cc) +
+  geom_histogram(aes(x=Shell.weight, fill=Rings), bins = 30, alpha = alpha_level)+
+  facet_wrap(~Rings,nc=1)+
+  theme(axis.title.x = element_text(size = 40),
+        legend.position="none",
+        strip.text.x = element_text(size = 20))   
+
+
+p_test <- ggplot(data_cc) + geom_histogram(aes(x=Shell.weight, fill=Rings), bins = 30, alpha = alpha_level) +
+  facet_wrap(~Rings,nc=1) +
+  theme(legend.position="bottom",
+        legend.text = element_text(size = 30),
+        legend.title = element_text(size=30),
+        legend.key.height= unit(1, 'cm'),
+        legend.key.width= unit(2, 'cm'))
+shared_legend <- extract_legend(p_test)
+
+
+
+grid.arrange(arrangeGrob(p1, p2, p3, p4, p5, p6, p7,
+                         ncol = 7),
+             nrow = 1,
+             heights = c(10))
+```
+
+```{r echo = F, warning=F, message=F, fig.height=60, fig.width=80, eval = T}
+
+grid.arrange(arrangeGrob(p8, p9, p10, p11, p12, p13, p14,
+                         ncol = 7),
+             nrow = 1,
+             heights = c(250),
+             shared_legend,
+             widths = c(1200, 1, 1, 1, 1, 1, 1)
+)
+```
+
+The descriptive feature histograms are displayed above. The first set of histograms display all the descriptive features used in the clustering process, with the exception of the target feature, in which a color scheme was applied to distinguish between the different cluster allocations. This color scheme was kept the same as in the cluster scatterplot matrix, and Cluster 1 is highlighted in red, and Cluster 2 is highlighted in blue. This set of histograms is technically not what the question asked for, but I included it for completion and my own investigation. To address the assignment's question, a second plot containing an unstacked set of histograms is included, and in this set of histograms the effect of varying the target feature, or the number of rings, is displayed across the different features' distributions. This second histogram will allow for investigation of the most informative features in classifying an abalone's number of rings.
+
+
+
+\newpage
+
+## 1.3.4 Cluster Parallel Coordinate Plot
+
+```{r echo = F, warning=F, message=F, fig.width=15, eval = T}
+library(GGally)
+data_pp <- data_cc
+data_pp$Gender <- NULL
+cols <- 1:ncol(data_pp)
+scl_select <- "uniminmax"
+ggparcoord(data = data_pp, columns = cols[-ncol(data_pp)], groupColumn = "cluster", title = "Parallel Coord. Plot of Abalone Data Grouped by Cluster",
+           scale = scl_select, alphaLines = 0.1, order = "allClass") +  scale_colour_discrete()
+ggparcoord(data = data_pp, columns = cols[-c(c(ncol(data_pp)-1):ncol(data_pp))], groupColumn = "Rings", title = "Parallel Coord. Plot of Abalone Data Grouped by Rings",
+           scale = scl_select, alphaLines = 0.1, order = "allClass") +  scale_color_discrete()
+```
+
+The parallel coordinate plot is displayed above. The color of the plot assumes one of two discrete values, which represent with the cluster that the data entries were identified as belonging in. This color scheme was kept the same as in the cluster scatterplot matrix, and Cluster 1 is highlighted in red, and Cluster 2 is highlighted in blue. A second parallel coordinate plot is also displayed, to aid in later investigation, where the number of Rings determine the color of the data entries. It is important to note, that for both of these figures, I used a function *GGally::ggparcoord* which allowed me to reorder the features on the x-label, such that the entries are displayed in a smooth and continuous manner. This will ultimately allow for easier investigation, as the variables with the smoothest and most homogenous connections will be placed on the left-hand side of the graph, and the most turbulent variables will be placed on the right-hand side of the graph. Finally, all features were scaled accordingly by min-max scaling to further aid in visualizing the parallel coordinate plot. 
+
+\newpage
+
+
+### 1.4 Cluster Analysis
+
+### 1.4.1 Cluster Rules From Descriptive Statistics
+
+Referring back to page 11 and 12, I will consider the tabulated descriptive statistics for this part of the assignment. The first rule can be deduced when inspecting the distribution of the Gender feature across the clusters. The distribution is displayed below, and there is a clear distinction between the age groups placed in the different clusters, in which the first cluster contains the majority of the infant abalones and the second cluster contains the majority of the adult abalones.
+
+
+```{r echo = F}
+data_no_out$cluster <- as.factor(k_pam$clustering) 
+clus_1 <- data_no_out[data_no_out$cluster == 1, ]
+clus_2 <- data_no_out[data_no_out$cluster == 2, ]
+row.names(clus_1) <- row.names(clus_2) <- NULL
+data.frame(summary(clus_1$Gender), summary(clus_2$Gender)) %>% knitr::kable(col.names = c("Cluster 1", "Cluster 2"))
+```
+
+When investigating Table 22 and 23, we can see that the length, diameter, whole weight, shucked weight, viscera weight and shell weight features are also quite different across the clusters. These features are summarized in the tables below.
+
+```{r echo = F}
+nms <- c("Length", "Diameter", "Whole.weight", "Shucked.weight", "Viscera.weight", "Shell.weight")
+summary(clus_1[,nms]) %>% knitr::kable()
+summary(clus_2[,nms]) %>% knitr::kable()
+```
+
+When inspecting the above two tables, we can deduce the following 7 general, and somewhat vague rules.
+
+1. Infant abalones are more likely to be placed in the first cluster, and adult abalones are more likely to be placed in the second cluster.
+2. Abalones with lower lengths are more likely to be placed in the first cluster, and abalones with higher lengths are more likely to be placed in the second cluster.
+3. Abalones with lower diameters are more likely to be placed in the first cluster, and abalones with higher diameters are more likely to be placed in the second cluster.
+4. Abalones with lower whole weights are more likely to be placed in the first cluster, and abalones with higher whole weights are more likely to be placed in the second cluster.
+5. Abalones with lower shucked weights are more likely to be placed in the first cluster, and abalones with higher shucked weights are more likely to be placed in the second cluster.
+6. Abalones with lower viscera weights are more likely to be placed in the first cluster, and abalones with higher viscera weights are more likely to be placed in the second cluster.
+7. Abalones with lower shell weights are more likely to be placed in the first cluster, and abalones with higher shell weights are more likely to be placed in the second cluster.
+
+However, in an attempt to deduce more specific rules, I investigated the minimums, maximums, and quantiles of the relevant features and saw that in my clustering approach the following rules hold. 
+
+&nbsp;
+
+IF: $Length > 0.6$ || $Diameter > 0.465$ || $Whole.Weight > 0.91$ : Cluster 2  
+
+ELSE IF: $Shucked.Weight > 0.495$ || $Viscera.Weight > 0.227$ || $Shell.Weight > 0.35$ : Cluster 2
+
+ELSE IF: $Length < 0.485$ || $Diameter < 0.345$ || $Whole.Weight < 0.6855$ : Cluster 1
+
+ELSE IF:  $Shucked.Weight < 0.2405$ || $Viscera.Weight < 0.1120$ || $Shell.Weight < 0.1210$ : Cluster 1
+
+&nbsp;
+
+```{r echo = F}
+nms <- c("Length", "Diameter", "Whole.weight", "Shucked.weight", "Viscera.weight", "Shell.weight")
+clus_1_med <- sapply(clus_1[,nms], median)
+clus_2_med <-sapply(clus_2[,nms], median) 
+cbind(clus_1_med, clus_2_med) %>% knitr::kable(caption = "Median Values of Features across Clusters", col.names = c("Cluster 1", "Cluster 2"))
+
+```
+
+These rules are particularly informative as it can be seen that the values used in the IF statements are approximately around the median values of the features, and do not operate on small margins outside the 1st and 3rd quantiles. This can be confirmed when inspecting the quantiles from the descriptive statistics above.
+
+\newpage
+
+
+### 1.4.2 Cluster Scatterplot Matrix Feature Separation & Rule Identification
+
+### 1.4.2.1 Feature Cluster Separation Identification
+
+When inspecting the SPLOM on page 15, we can note that the features Rings and Height are the worst at separating the clusters and the whole weight feature is the best at separating the clusters. This is particularly evident when investigating the density plot on the diagonal. The whole weight feature has the least overlap between clusters, and rings and height have the most overlap. The remaining descriptive features, not considering Gender or Cluster, provide a decent separation of clusters. Therefore, to conclude, the descriptive features that result in good separation of clusters are as follows, in no particular order: Length, Diameter, Whole Weight, Shucked Weight, Viscera Weight, and Shell Weight.
+
+### 1.4.2.1 Feature Cluster Rule Separation Identification
+
+I struggled with this question, and was uncertain how to deduce any new rules from the scatterplot matrix. The assignment detail distinguished the rules between section *1.4.1* and *1.4.2* as rules to discern among clusters, and rules to characterize clusters. I might have misunderstood this, but I believe this to be the same task. Therefore if I assume I'm allowed to repeat rules from the previous question, I deduced the following rules. Note that all values used are approximate, as it is difficult to read a precise value from the SPLOM graph.
+
+1. Infant abalones are more likely to be placed in the first cluster, and adult abalones are more likely to be placed in the second cluster.
+2. Abalones with a $Length < 0.5$ are definitely placed in the first cluster, and abalones with a $Length > 0.6$ are definitely placed in the second cluster.
+3. Abalones with a $Diameter < 0.4$ are definitely placed in the first cluster, and abalones with a $Diameter > 0.5$ are definitely placed in the second cluster.
+4. Abalones with a $Whole.Weight < 0.8$ are definitely placed in the first cluster, and abalones with a $Whole.Weight > 1.0$ are definitely placed in the second cluster.
+5. Abalones with a $Shucked.Weight < 0.25$ are definitely placed in the first cluster, and abalones with a $Shucked.Weight > 0.5$ are definitely placed in the second cluster 
+6. Abalones with a $Viscera.weight < 0.1$ are definitely placed in the first cluster, and abalones with a $Viscera.weight > 0.2$  are definitely placed in the second cluster 
+7. Abalones with a $Shell.Weight < 0.1$ are definitely placed in the first cluster, and abalones with a $Shell.Weight > 0.4$  are definitely placed in the second cluster. 
+
+This process ultimately resulted in me re-doing the previous rules, and a very similar if-statement can be used to characterize the clusters.
+
+&nbsp;
+
+IF: $Length > 0.6$ || $Diameter > 0.5$ || $Whole.Weight > 1$ : Cluster 2  
+
+ELSE IF: $Shucked.Weight > 0.5$ || $Viscera.Weight > 0.2$ || $Shell.Weight > 0.4$ : Cluster 2
+
+ELSE IF: $Length < 0.5$ || $Diameter < 0.4$ || $Whole.Weight < 0.8$ : Cluster 1
+
+ELSE IF:  $Shucked.Weight < 0.25$ || $Viscera.Weight < 0.1$ || $Shell.Weight < 0.1$ : Cluster 1
+
+
+\newpage
+
+### 1.4.3 Cluster Histogram Feature Importance
+
+
+On page 16, two sets of histograms are displayed. The first set of histograms displays the separation of the clusters for each feature, and the second set of histograms displays unstacked histograms with reference to each of the number of rings for each feature. The first set of histograms is technically not necessary for identifying which features are most important for the classification of the abalone, as it instead gives insight into the separation between the two clusters and I included it for the sake of completion and my own investigation. The second, unstacked set of histograms gives insight into the change of each feature for varying numbers of rings. Features that display changes in distribution as the target feature is varied will be considered as having a higher importance in classifying the abalones.
+
+When inspecting the set of histograms, it is immediately obvious which features' distributions change the most with varying rings. The left three features in the unstacked set of histograms share a general increasing trend in their respective values as the number of rings increases. These three left features are the features length, diameter and height and are the three most informative features in classifying the abalone. It is hard to say which features are specifically the most informative, but it is clear that of these three most informative features, height is the least informative as its distribution changes less than length and diameter's respective distributions do. 
+
+Simiarly, the four right features' distributions vary the least across varying numbers of rings. These features are whole weight, shucked weight, viscera weight and shell weight, and they are the four least informative features in this data set. Once again, it is hard to rank these least informative features as their distributions seem quite similar, but I concluded that shell weight was the most informative from these four least informative features as its' distribution varies just a slight bit more than the other least informative features.
+ 
+
+### 1.4.4 Cluster Parallel Coordinate Plot Feature Importance
+
+On page 17, two parallel coordinate plots are displayed. The first parallel coordinate plot displays the formed clusters across the dataset, and the left-most variables on the x-axis represent the most informative features in clustering the data set. The second parallel coordinate plot displays the number of rings across the data set, and the left-most variables on the x-axis represent the most informative features in classifying the number of rings. These left-most features in the coordinate plots are considered the most informative features with respect to either the clustering or the number of rings. This is because the color of the parallel coordinate plots are set to vary according to either the cluster, or the number of rings, and by setting this color, the function I implemented allowed for re-ordering the variables across these plots such that the most contiguous sets of lines across features are displayed in a decreasing sense of similarity from left to right. We can therefore deduce that the areas of the parallel plot with the most distinct and clean separations of lines are the most informative features. This is somewhat different from the class implementation, but I found it to be quite a convenient and handy tool. I then proceeded to investigate the assignment question, which specified that the parallel coordinate plot should be used support the most important features in classifying the abalone. 
+
+In terms of classifying the abalones' number of rings, the second parallel coordinate plot illustrates a smooth set of lines flowing through the diameter, length, and height features, after which the lines become a bit more entangled. This is especially clear when we focus on the top blue and middle green chunks of the lines flowing through these three features. When we trace these two sections of lines from the left-most to the right-most features we can see that at the left-most side these chunks of lines are an ordered and almost separable set of lines, yet after passing through the height feature and moving into the shell weight feature, the previously separable set of lines start to get mixed and the borders of the parallel coordinate plot become much less clear. Therefore, the three most informative features are diameter, length, height and the four least informative features are shell weight, whole weight, viscera weight and shucked weight. In terms of classifying the number of rings, I could not identify any specific feature should be removed as none of the least informative features seemed redundant enough to justify its' removal.
+
+In terms of clustering the dataset, the first parallel coordinate plot illustrates a smooth and highly separable set of lines. The blue and red chunks of lines only start to become entangled after the lines have passed the length feature and enter the height and ring features. These features provide the least information with regards to clustering the data set, and can potentially be removed from the clustering approach.  
+
+
+
+
+\newpage
+
+# References
+
+Kassambara, A. (2017). Practical guide to cluster analysis in R: unsupervised machine learning. Journal of Computational and Graphical Statistics.
+
+Engelbrecht, AP. (2019). Topic 4: Data Clustering and Analysis, Data Analytics 344, Stellenbosch University, Department of Industrial Enigneering, and Division of Computer Science
+
+\newpage
+
+# Notes 
+
+Unscaling of medoids in *Section 1.2.3* and remapping in *Section 1.3.2* was performed by finding the row indices in the scaled data set, then matching those indices in the data set right before it was scaled. A similar process was performed to reinsert Gender after clustering has been performed.
+
+|| was used to indicate the OR operator
+
+The full dataset was not used in the ODI, as the resulting graph was excessively large [>100MB] and did not differ much from a sampled ODI. The Hopkins statistic did also not differ much when implemented on a smaller sample of the data set.
+
+```{r echo = F, message = F}
+dep <- renv::dependencies()
+dep$Package 
+```
+

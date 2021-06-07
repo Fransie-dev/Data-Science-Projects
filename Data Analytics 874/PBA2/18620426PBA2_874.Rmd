@@ -1,0 +1,761 @@
+---
+title: "Post-Block Assignment 2"
+author: 
+- "Francois van Zyl"
+- "18620426"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+# rm(list = ls())
+full_report <- T
+auc_rep <- T
+glob_fig_height <- 2.5
+glob_fig_width <- 6
+
+
+# Default Chunk Options ---------------------------------------------------
+knitr::opts_chunk$set(echo = TRUE)
+
+# Libraries ---------------------------------------------------------------
+library(dplyr)
+library(cluster)
+library(factoextra)
+library(knitr)
+library(rpart)
+library(rpart.plot)
+library(partykit)
+library(rattle)
+library(RWeka)
+library(dplyr)
+library(purrr)
+library(Metrics)
+library(pROC)
+library(DMwR)
+library(ROSE)
+library(caret)
+library(GGally)
+library(e1071)
+library(themis)
+library(ggplot2)
+library(UBL)
+library(mlr)
+library(multiROC)
+library(tidyrules)
+library(pander)
+library(arules)
+library(arulesCBA)
+
+
+# Read data ---------------------------------------------------------------
+setwd("E:/Storage/MEng 2020/Data Analytics/Post-Block 2")
+data <- readxl::read_xlsx("abaloneCleaned.xlsx") %>% data.frame() %>% na.omit() 
+data$Gender <- as.factor(data$Gender)
+
+# Function ----------------------------------------------------------------
+means <- function(dat)
+{
+  mns <- c()
+  for(i in 1:ncol(dat)) mns[i] <- mean(dec_pred[,i], na.rm = T)
+  return(mns)
+}
+```
+
+
+## Selection of Problem Type
+
+Before deciding on whether to treat this as a multi-class classification or regression problem, I investigated a histogram and some descriptive statistics of the target feature Rings, as seen below.  
+
+&nbsp;
+
+```{r echo = F, fig.height = glob_fig_height, fig.width = glob_fig_width, fig.align="center"}
+
+data.frame(
+  Min = min(data$Rings),
+  Quant_25 = quantile(data$Rings, probs = .25),
+  Median = median(data$Rings),
+  Mean = mean(data$Rings),
+  Quant_75 = quantile(data$Rings, probs = .75),
+  Max = max(data$Rings),
+  Distinct = length(unique(data$Rings))
+) %>% 
+  kable(col.names = c("Minimum", "1st Quantile", "Median", "Mean", "3rd Quantile", "Maximum", "Distinct"),
+        row.names = F,
+        caption = "Descriptive Statistics and Histogram of Rings")
+
+ggplot(data, aes(x=Rings)) +  geom_bar(alpha = 0.6)   + ggtitle("Frequency Count of Original Data Set")
+
+```
+
+All the entries for the target feature assume an integer value within the range $Rings \in$ {1, 29}. 50% of the entries lie between $Rings \in$ {8, 11} and this imbalanced nature of the dataset will prove troublesome during the pruning process, as these lesser leaf nodes will undoubtedly be pruned away. However there are data resampling methods that can be used to balance the data set. I was interested in investigating this problem from a classification perspective with the usage of data resampling, and proceeded to use a classification tree.
+
+\newpage
+
+## Decision Tree Induction
+
+### Selection of Decision Tree
+
+To select a decision tree, I first considered the nature of the current problem. As we are trying to predict a categorical value, some form of classification decision tree would be needed. One of the most well-known decision trees are CART, or Classification And Regression Trees. During training, these trees are constructed with a single root node, which is the feature that was calculated as being the most informative to split on in the data set. After finding this root node, decision nodes are formed by checking which features are the most informative to split on. This process of splitting is continued until leaf nodes are constructed with the target value in. Due to this, CART trees perform indirect feature selection as less informative features are simply left out.
+
+To find the features that are most informative, these classification trees use measures to characterize the training observations' entropy. The feature that provides the highest reduction in entropy after splitting is selected as the most informative feature to split on. This entropy is used to characterize the disorder of the data set, and by minimizing it we are constructing a decision tree that ensures that more probable outcomes are grouped together. In the case of classification, these CART decision trees typically use either the Gini Impurity or Information Gain measures. These measures are expected to perform similarly, but for large data sets the Gini Impurity measure seems to be more computationally efficient and it is therefore preferable over the Information Gain measure.
+
+Quoting the referenced software documentation, in the case of regression these CART decision trees will use the sum-of-squares of the node $SS_T$ and the node's left and right children nodes, $SS_L$ and $SS_R$, to decide on the feature that provides the best split at any given node. This method of splitting is the same as selecting a split that maximizes the inter-group sum-of-squares in an ANOVA test. Note that other methods exist as measures of splitting for regression, but this method seemed to be the most common choice in regression applications of CART.
+
+### Data Transformations 
+
+CART trees are sensitive to imbalanced classes. Like many decision trees, CART trees typically overfit a data set during training, and therefore a pruning process is applied after training to remove less important leaf nodes. In the presence of imbalanced classes, as well as outliers, this pruning proces might result in an underfitted tree, as the minority classes might be pruned away. This data set has multiple minority classes, and the number of instances falling into each unique category is displayed below. Please note that the upper row refers to the category, and the lower row refers to the count within the categories.
+
+
+```{r show_rings, eval=T, echo=F}
+part_1 <- summary(as.factor(data$Rings))[1:13]
+part_2 <- summary(as.factor(data$Rings))[14:28]
+part_1 %>% t() %>% kable(caption = "Counts of Rings")
+part_2 %>% t() %>% kable()
+```
+
+Note the scarcity of the data points between $Rings \in$ {1,4} and $Rings \in$ {16,29}. In an attempt to combat this scarcity of data points, I decided to bin the lesser appearing categories into two new categories. These categories will represent all entries below and above a certain threshold of Rings. For example, instead of having $Rings = 21$, there will be a feature $Rings > 17$ that contains all features above the cut-off point.
+
+\newpage
+
+```{r change_outlier, echo=F, warning=F, message=F}
+# Rings: Outlier removal ---------------------------------------------------------
+remove_outliers<-function(num_col)
+{
+  qnt<-quantile(num_col, probs=c(.25, .75), na.rm = T)
+  upper_lim<-qnt[2]+1.5*IQR(num_col)
+  lower_lim<-qnt[1]-1.5*IQR(num_col)
+  for(i in 1:length(num_col)){
+    if(num_col[i] > upper_lim && !is.na(num_col[i])) num_col[i] <- NA
+    if(num_col[i] < lower_lim && !is.na(num_col[i])) num_col[i] <- NA
+  }
+  return(num_col)
+}
+out_col <- "Rings"
+data_no_out <- data
+for(i in 1:length(out_col)) data_no_out[,out_col[i]]<-remove_outliers(data_no_out[,out_col[i]])
+data_no_out <- data_no_out[complete.cases(data_no_out),]
+
+```
+
+This introduced a new problem, in that I had to decide what the cut-off point is for binning these values into these two new categories. For example, should anything with less than 100 entries be binned together, or should it be 50 entries, or 20 entries? In an attempt to find an answer for this, I decided to apply the IQR method on the Rings feature to identify outlying points, and then use this as indication of what range of the target feature to bucket together. By using anything outside 1.5 times the IQR range as an outlier, the minimum and maximum of the calculated borders are `r min(as.numeric(as.character(data_no_out$Rings)))` and `r max(as.numeric(as.character(data_no_out$Rings)))`. Although this might be questionable, I binned all values *exceeding* these thresholds into two new categories. The newly created categories are displayed below in an histogram and a table that documents their respective entry counts.
+
+```{r echo=F, fig.height = glob_fig_height, fig.width = glob_fig_width, fig.align="center"}
+# Change Rings ------------------------------------------------------------
+data_no_out$Rings <- as.factor(data_no_out$Rings)
+data$Rings <- as.factor(data$Rings)
+levels(data$Rings)[1:3] <- "< 4 "
+levels(data$Rings)[14:nlevels(data$Rings)] <- "> 15"
+
+ggplot(data, aes(x=Rings)) +  geom_bar(alpha = 0.6)   + ggtitle("Frequency Count of Altered Data Set")
+part_1 <- summary(as.factor(data$Rings))
+part_1 %>% t() %>% kable()
+```
+
+After introducing these two new categories, I merged the female and male categories from the Gender feature into one category called adult. I did this due to prior knowledge from the previous assignments, where we could recall that the distributions of the features are very similar for both male and female categories. This problem is better suited as an adult versus infant problem, and the distinction between the male and female categories could unnecessarily complicate the extracted rules (if they use the feature Gender). I did not plot the density plots across all features, but the density plot is shown below for the feature length, and we can see that the distributions are very similar for male and female.
+
+
+```{r change_gend, echo=F, warning=F, message=F, fig.align="center", fig.height=glob_fig_height, fig.width=glob_fig_width}
+ggplot(data, aes(x=Length, fill=Gender)) +
+  geom_density(alpha = 0.4)  +scale_fill_brewer(palette="Pastel1") 
+# Change Gender -----------------------------------------------------------
+levels(data$Gender)[c(1,3)] <- "A"
+```
+
+\newpage
+
+Before attempting any balancing of the data set, I first split the data set into training and testing sets as it is generally considered good practice to validate a model on authentic data. I used an 80/20 split and the resulting size of the training and testing sets are displayed below. The training and testing target value distributions are also displayed in a stacked bar plot below. The testing set seems to have a decent spread of the minority classes, and I proceeded to over-sample the training set.
+f
+
+```{r create_training, echo=F, eval = T, fig.align="center", fig.height=glob_fig_height, fig.width=glob_fig_width}
+set.seed(0)
+data$Rings <- as.factor(data$Rings)
+idx <- createDataPartition(data$Rings, p = 0.8, list = F)
+train_dummy <- train <- data[idx,]
+test_dummy <- test <- data[-idx,]
+data.frame(Train = nrow(train), Test = nrow(test)) %>% 
+  kable(caption = "Training and Testing Set: Before Oversampling")
+
+train_dummy$Type <-  "Train"
+test_dummy$Type <-  "Test"
+dummy <- rbind(train_dummy, test_dummy)
+
+ggplot(dummy, aes(x=Rings, fill=Type)) +
+  geom_bar(alpha = 0.6)  +scale_fill_brewer(palette="Pastel1") 
+
+```
+
+To balance the data set, I performed the SMOTE technique on the training data set. As the data set contained nominal features I implemented the heterogeneous value difference metric as the distance measure, with 5 neighbors being used to generate the synthetic minority instances. I also applied a weighting on the oversampling such that the number of instances for all minority classes are equal to the number of instances for the target class 9. The SMOTE'd training data is displayed below. After this oversampling, the training set consisted of 7725 entries, with the original 9 features left intact.
+
+```{r fig.height = glob_fig_height, fig.width = glob_fig_width, fig.align="center", echo=F}
+saved <- levels(train$Rings)
+levels(train$Rings) <- c("LTF", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "GTF")
+summar <- summary(train$Rings)
+mul <- summar["Nine"]
+C.perc = list(LTF = mul/summar["LTF"],
+              Four = mul/summar["Four"],
+              Five = mul/summar["Five"],
+              Six = mul/summar["Six"], 
+              Seven = mul/summar["Seven"],
+              Eight = mul/summar["Eight"],
+              Nine = mul/summar["Nine"],
+              Ten = mul/summar["Ten"],
+              Eleven = mul/summar["Eleven"],
+              Twelve = mul/summar["Twelve"], 
+              Thirteen = mul/summar["Thirteen"],
+              Fourteen = mul/summar["Fourteen"],
+              Fifteen = mul/summar["Fifteen"],
+              GTF = mul/summar["GTF"])
+train_smote <- SmoteClassif(Rings~., train, C.perc = C.perc, dist = "HVDM", k = 5)
+levels(train$Rings) <- levels(train_smote$Rings) <- saved
+ggplot(train_smote, aes(x=Rings)) +  geom_bar(alpha = 0.6) + ggtitle("Frequency Count of SMOTE'd train Set")
+```
+
+\newpage
+
+### CART Tree Induction
+
+Before implementing the decision tree, I applied ten-fold cross validation to tune the decision tree's parameters. The parameters considered were the complexity parameter, the minimum number of observations that may exist in a leaf node, the minimum number of observations that must exist in a node for a split to be computed, the maximum depth of the decision tree, as well as the splitting criterion of the node. 
+
+Of all the tuned parameters, I found that the complexity parameter had the greatest influence on the tree performance. Quoting the software documentation, this complexity parameter relates the goodness-of-fit to whether a node should be split upon. It attempts to minimize the lack of goodness-of-fit with splits, and therefore it aids in deciding whether splits are truly useful, and it is a common measure used to combat overfitting. As the pruning process that I will be implementing uses this complexity parameter, I kept this complexity parameter constant at zero so that it does not affect the induction the process.
+
+The results from the cross validation are displayed below. Note that only the top six parameter combinations are displayed. The accuracy metric was used to evaluate the performance of the tests, and the mean accuracy across the ten-fold cross validation tests are displayed on the right-most column. The complexity parameter can be seen to be left at zero, and the three numeric parameters were varied between 5, 10, and 20. The cross-validation test using the Gini method is displayed first, and it can be seen to perform slightly worse than the test using the information gain criterion. In fact, the three parameters did not change the accuracy of the validation tests much. The accuracy can be seen to be quite low, but I proceeded and selected the best parameters as displayed at the bottom of the page. 
+
+&nbsp;
+
+```{r parameter_tune, echo=F, eval=auc_rep, warning = F, message=F}
+set.seed(0)
+iris.task = classif.task = makeClassifTask(id = "iris-example", data = train_smote, target = "Rings")
+resamp = makeResampleDesc("CV", iters = 10L)
+
+control.grid = makeTuneControlGrid() 
+
+ps = makeParamSet(
+     makeDiscreteParam("cp", values = 0),
+     makeDiscreteParam("minbucket", values = c(5, 10, 20)),
+     makeDiscreteParam("minsplit", values = c(5, 10, 20)),
+     makeDiscreteParam("maxdepth", values = c(5, 10, 20))
+)
+
+
+#you can also check all the tunable params
+# getParamSet(lrn)
+
+lrn = makeLearner("classif.rpart", parms = list(split = "gini")) # gini better than information
+res = tuneParams(lrn, task = iris.task, resampling = resamp, control = control.grid, par.set = ps, measures = list(acc))
+opt.grid = as.data.frame(res$opt.path)
+# getLearnerModel(train(makeLearner("classif.rpart"), iris.task), more.unwrap = TRUE) %>% fancyRpartPlot(type = 5)
+a <- opt.grid[order(opt.grid$acc.test.mean),c(1,2,3,4,5)] %>% head() 
+rownames(a) <- NULL
+a %>% knitr::kable(caption = "Cross Validation With Gini Method")
+
+lrn = makeLearner("classif.rpart", parms = list(split = "information")) # gini better than information
+#and the actual tuning, with accuracy as evaluation metric
+res = tuneParams(lrn, task = iris.task, resampling = resamp, control = control.grid, par.set = ps, measures = list(acc))
+opt.grid = as.data.frame(res$opt.path)
+# getLearnerModel(train(makeLearner("classif.rpart"), iris.task), more.unwrap = TRUE) %>% fancyRpartPlot(type = 5)
+a <- opt.grid[order(opt.grid$acc.test.mean),c(1,2,3,4,5)] %>% head() 
+rownames(a) <- NULL
+a %>% knitr::kable(caption = "Cross Validation With Information Gain")
+
+a <- opt.grid[order(opt.grid$acc.test.mean),c(1,2,3,4)] %>% head(1) 
+split_criterion <- "Information"
+a <- cbind(a, split_criterion)
+rownames(a) <- NULL
+a %>% knitr::kable(caption = "Final Parameters Used")
+```
+
+\newpage
+
+
+```{r fit_overfit_reg, echo=F, eval = T, fig.height= 7.5, fig.width=15}
+fit <- rpart(Rings ~., data = train_smote,
+             parms = list(split = "information"),
+             control = rpart.control(cp = 0,
+                                     xval = 0,
+                                     minsplit = 5,
+                                     maxdepth = 5,
+                                     minbucket = 10))
+
+fancyRpartPlot(fit,
+               type = 5,
+               main = "Unpruned CART",
+               sub = NULL)
+```
+
+The induced decision tree is displayed above. My apologies for leaving the visualization and its' labels so small, the software implementation gave me quite a bit of trouble with the formatting. The graph is pixelated so if the examiner wishes to inspect it closer they should be able to see more if they zoom in.
+
+We can see that there are a total of 27 leaf nodes, and therefore 27 rules, that can be extracted from this decision tree. Looking at the structure of the graph, there is one root node, 4 layers of decision nodes, and one layer of leaf nodes. To reach these leaf nodes, most paths seem to pass through all 4 layers of decision nodes. There are still some leaf nodes that only pass through 3 layers of decision nodes. By investigating the leaf nodes, we can see that the decision tree contains no leaf nodes that are capable of predicting class 13.  The rest of the fourteen classes are all present in at least one leaf node. 
+
+The induced decision tree is displayed in text format below. In this text, each indentation represents a layer of nodes, and after passing through three or four layers of *decision nodes*, the text ends the rule with a colon, in which case the predicted value is given. For example, if the text displayed is: *[11] Diameter < 0.17939: 5 (n = 110, err = 37.3%)*, it first states the node number, *[11]*, then states a condition that has to be met at this node, *Diameter < 0.17939* and afterwards the predicted class label is given as *5*. 
+
+Then, the amount of observations present within this leaf node are displayed, which in this case is given as *n = 110*. This is equivalent to the support measure that will be considered later. After this, the amount of erroneous classifications are displayed as a percentage, that is the amount of observations that were placed in this leaf node whose true class label is not the same as the predicted class label. In this case, this is given as *err = 37.3%*. This represents the opposite of the accuracy metric, which is given by *1 - err*. This measure will be considered later, when the rule-based classifier is being discussed.
+
+To further illustrate this misclassification error on the training data set, I will refer to the visualization of the unpruned decision tree above. In the leaf nodes, the actual class probabilities within these predicted class labels are displayed. For example, when inspecting the bottom right leaf node, that is the leaf node that predicts > 15 as the number of rings, we can see that the bottom right, or 14th, class percentage is given as 0.39. This value reflects the percentage of instances within this node that actually belong to the 14th class label, or > 15. Therefore, all other instances are incorrectly placed into this node and these class percentages illustrate what labels they had. 
+
+\newpage
+
+```{r , echo=F, eval = T}
+fit_party <- as.party.rpart(fit)
+fit_party
+```
+
+\newpage
+
+By inspecting the above text, we can see that the decision tree really struggled to model the data accurately. As expected, the classes that had to be up-sampled the most seem to have the lowest error in the training set, as seen in nodes [4], [8], [10] and [18]. 
+
+To investigate the performance on the testing set, I first considered the AUC curve. The curve is displayed below, with a legend indicating the categories and the macro- and micro-averages obtained in the curve. From this plot can see that classes < 4 (LTF in legend), 4, and 5 achieved the best curves.
+
+&nbsp;
+
+```{r echo = F, message=F, warning = F, fig.height=glob_fig_height*2.5, fig.width=glob_fig_width, eval=auc_rep}
+test_df <- test
+dt_pred <- predict(fit, test_df, type = "prob")
+# dt_pred <- data.frame(dt_pred)
+colnames(dt_pred)[1] <- "LTF"
+colnames(dt_pred)[14] <- "GTF"
+colnames(dt_pred) <- paste0(colnames(dt_pred), "_pred_dt")
+true_label <- dummies::dummy(test_df$Rings, sep = ".")
+true_label <- data.frame(true_label)
+colnames(true_label) <- gsub(".*?\\.", "", colnames(true_label))
+colnames(true_label) <- paste0(colnames(true_label), "_true")
+colnames(true_label)[1] <- "LTF_true"
+colnames(true_label)[14] <- "GTF_true"
+final_df <- cbind(true_label, dt_pred)
+roc_res <- multi_roc(final_df, force_diag=T)
+
+
+
+
+
+plot_roc_df <- plot_roc_data(roc_res)
+ggplot(plot_roc_df, aes(x = 1-Specificity, y=Sensitivity)) +
+  geom_path(aes(color = Group, linetype=Method), size=1.5) +
+  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1), 
+                        colour='grey', linetype = 'dotdash') +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5), 
+                 legend.justification=c(1, 0), legend.position=c(.99, .05),
+                 legend.title=element_blank(), 
+                 legend.background = element_rect(fill=NULL, size=0.5, 
+                                                           linetype="solid", colour ="black"))
+```
+
+On the following page, two tables are displayed that order the categories by their obtained AUC value.
+
+
+\newpage
+
+```{r auc, eval = T, echo = F, message=F, warning = F,}
+test_df <- test
+dt_pred <- predict(fit, test_df, type = "prob")
+# dt_pred <- data.frame(dt_pred)
+colnames(dt_pred)[1] <- "LTF"
+colnames(dt_pred)[14] <- "GTF"
+colnames(dt_pred) <- paste0(colnames(dt_pred), "_pred_dt")
+true_label <- dummies::dummy(test_df$Rings, sep = ".")
+true_label <- data.frame(true_label)
+colnames(true_label) <- gsub(".*?\\.", "", colnames(true_label))
+colnames(true_label) <- paste0(colnames(true_label), "_true")
+colnames(true_label)[1] <- "LTF_true"
+colnames(true_label)[14] <- "GTF_true"
+final_df <- cbind(true_label, dt_pred)
+roc_res <- multi_roc(final_df, force_diag=T)
+a <- unlist(roc_res$AUC)[1:14]
+names(a) <- levels(data$Rings)
+a <- a[order(a,decreasing = T)]
+a %>% t() %>% round(3) %>%  kable(caption = "Ordered AUC values: Testing Set")
+z <- a %>% t() %>% round(3) %>%  kable(caption = "Ordered AUC values: Testing Set")
+
+test_df <- train_smote
+dt_pred <- predict(fit, test_df, type = "prob")
+# dt_pred <- data.frame(dt_pred)
+colnames(dt_pred)[1] <- "LTF"
+colnames(dt_pred)[14] <- "GTF"
+colnames(dt_pred) <- paste0(colnames(dt_pred), "_pred_dt")
+true_label <- dummies::dummy(test_df$Rings, sep = ".")
+true_label <- data.frame(true_label)
+colnames(true_label) <- gsub(".*?\\.", "", colnames(true_label))
+colnames(true_label) <- paste0(colnames(true_label), "_true")
+colnames(true_label)[1] <- "LTF_true"
+colnames(true_label)[14] <- "GTF_true"
+
+final_df <- cbind(true_label, dt_pred)
+roc_res <- multi_roc(final_df, force_diag=T)
+a <- unlist(roc_res$AUC)[1:14]
+names(a) <- levels(data$Rings)
+a <- a[order(a,decreasing = T)]
+a %>% t() %>% round(3) %>%  kable(caption = "Ordered AUC values: SMOTE'd Training Set")
+
+```
+
+Using sources found online,  $AUC > 0.85$ implies a good classification accuracy, $0.75 < AUC < 0.85$ implies a moderate classification accuracy, and $AUC < 0.75$ implies a low classification accuracy. We can therefore see that the decision tree could only predict categories *<4, 4, 5, >15, 7, 6, and 8* with moderate to good classification accuracy in the testing set. Some further testing set performance measures are displayed below.
+
+
+```{r echo=F}
+pred <- as.factor(predict(fit, test, type = "class"))
+a <- confusionMatrix(test$Rings, pred)
+dec_pred <- a$byClass[,c(1:4, 7, ncol(a$byClass))] 
+Mean_UT <- means(dec_pred)
+# dec_pred <- rbind(dec_pred, Mean_UT)
+dec_pred %>% kable(caption = "Performance Measures: Testing Set")
+
+```
+
+
+The sensitivity, or recall, relates to the decision tree's capacity to correctly classify a certain class. Classes with higher sensitivities are classified correctly more frequently, and we can see that the class 8 was classified correctly the best. Note that [7,11] were the dominant classes in the authentic data set. Of these dominant classes, classes 10 and 11 seem to be perform the worst in sensitivity. We can see that no classes were correctly classified as belonging to class 13 or 14. 
+
+The specificity is connected to the sensitivity, in that it relates to the decision tree's capacity to correctly classify a certain class as not belonging to this specified class. Classes with higher specificities are more often correctly classified as not belonging to a class than classes with lower specificities. We can see that the previously mentioned dominant classes all have the lowest specificities, and are therefore more commonly misclassified than other classes. This could be due to the authenticity of the data, as well as the nature of the data set. We can also see that classes 13 and 14 have an above-average specificity, despite never being correctly classified.
+
+The positive predictive value measures the decision tree's probability that a class is assigned to the corresponding correct class, and the negative predictive value measures the probability that a class is correctly not assigned to a corresponding class. Classes 8, 10 and 12 have the lowest positive predictive value and are therefore the least likely to be classified correctly. Similarly, by inspecting the negative predictive value, class 11 is more likely to be incorrectly assigned to other classes.
+
+The F1 score takes into account both of these positive and negative predictive values, and according to this measure classes 12 and 15 perform the worst. This is corroborated by the balanced accuracy metric. The balanced accuracy metric provides a weighted accuracy, and takes into account the number of  observations for each class. According to this measure classes 12 and 15 performed the worst. 
+
+After investigating these measures, I considered the accuracy metric of the whole classification problem on the testing set. This was calculated and is displayed below. This is a very low value, especially considering that the skew classes were balanced.
+
+```{r echo = F}
+accuracy(test$Rings, pred) %>% kable(caption = "Accuracy measure: Unpruned Decision Tree", col.names = "acc")
+```
+
+
+
+### Rule Extraction
+
+I proceeded to extract rules from the CART tree. The rules are displayed in a table below with the specified format of **if antecedent then consequent**. The antecedent for each rule is given by the respective statements under the column labeled IF. Similarly, the consequent for each rule is given by the value under the column labeled THEN. The support, or amount of instances that satisfy the antecedent of the rule, is displayed. The coverage is also displayed, and it is equivalent to the percentage of supporting instances within the training set that satisfies the antecedent. The accuracy of the rules are also displayed, and this measure reflects the fraction of instances that meet the antecedent and are correctly classified as having the associated consequent. Note both accuracy and coverage were left in their fraction forms, and they are not displayed in percentages.
+
+```{r echo = F,results='asis', warning=F, message=F}
+rules_tidy <- tidyRules(fit)
+
+check <- data.frame(ID = rules_tidy$id, 
+                    IF = rules_tidy$LHS,
+                    THEN = rules_tidy$RHS,
+                    Support = rules_tidy$support,
+                    # Coverage = paste0(round(rules_tidy$support/nrow(train_smote)*100,3), "%"),
+                    Coverage = rules_tidy$support/nrow(train_smote),
+                    Accuracy = rules_tidy$confidence)
+
+pandoc.table(check, split.tables = 120, caption = "Rules Extracted") %>% pander()
+```
+
+By inspecting the extracted rules, and investigating the rules with the highest and lowest accuracies, we can conclude which rules are the best and worst at accurately classifying the training set. The following tables display the ten rules that obtained the highest and lowest accuracies in the training set.
+
+```{r show_res,echo=F, warning = F}
+check$Accuracy <- round(check$Accuracy, 3)
+check$Coverage<- round(check$Coverage, 3)
+check <- check[order(check$Accuracy, decreasing = T),]
+check[1:10, c("ID", "THEN", "Accuracy")]  %>% t()  %>% kable(col.names = NULL, caption = "Rules: Highest accuracies")
+check[17:27, c("ID", "THEN", "Accuracy")]  %>% t()  %>% kable(col.names = NULL, caption = "Rules: Lowest accuracies")
+
+
+```
+
+By re-inspecting Node [4] on page 7, that is the node corresponding to < 4, we can see that in terms of misclassification error, this leaf node performed the best in the entire decision tree. In the extracted rule set, the rule relating to this node (ID = 1) performed the best in terms of accuracy. The accuracies achieved across all these rules reflect the opposites of the misclassification errors illustrated in the decision tree.
+
+We can see that the three rules with ID 1, 4 and 8; performed the best in accurately classifying the three classes < 4, 4, and 5. These were also the classes with the highest specificities, and within the training data set they seem to be the easiest to distinguish from other classes. The classes with the lowest accuracies correspond to classes 11, 9, 15, and 12. This corresponds with what was found with the decision tree. I then proceeded to investigate the coverage of these rules.
+
+
+
+```{r show_res_2,echo=F, warning = F}
+check <- check[order(check$Coverage, decreasing = T),]
+check[1:10, c("ID", "THEN", "Coverage")]  %>% t()  %>% kable(col.names = NULL, caption = "Rules: Highest coverage")
+check[17:27, c("ID", "THEN", "Coverage")]  %>% t()  %>% kable(col.names = NULL, caption = "Rules: Lowest coverage")
+```
+
+The rules with the highest coverage are displayed above. The maximum coverage is obtained by the class > 15, with a value of 12.2%. The lowest coverage is 0.4%, and in fact there are 6 rules that do not even achieve a coverage of > 1 %. This is likely overfitting, and the pruning process will most likely remove these rules. This will be investigated later. Due to the nature of the rule extraction, this rule-based classifier performed exactly the same on the testing set as the decision tree and achieved an overall accuracy of `r accuracy(test$Rings, pred)`.
+
+Furthermore, the rules extracted from the decision tree are quite complicated and the majority of them are constructed from the AND operator of five IF statements. This is because when traversing the decision tree, most paths to leaf nodes pass through the root node and either three or four layers of decision nodes. The rules are quite complicated, and can be seen to heavily rely on the feature shell weight. This is especially visible when inspecting the extracted rule with ID = 1, as it splits on shell weight three times before reaching its leaf node.
+
+
+
+\newpage
+
+### Pruning Process
+
+To perform the pruning process on the rule set, I performed an approach based on pruning the induced decision tree. First, I performed a ten-fold cross-validation test on the initial induced decision tree to find the complexity parameter at its current parameters [minsplit = 5,  maxdepth = 5, minbucket = 10]. The results of this cross validation test are displayed below, and the complexity parameter can be seen to achieve a value that minimizes the relative error of the decision tree. The value of this complexity parameter is displayed below.
+
+
+```{r pruning_process, echo=F, eval = T, fig.height=glob_fig_height*1.5, fig.width=glob_fig_width, fig.align="center"}
+fit <- rpart(Rings ~., data = train_smote,
+             parms = list(split = "information"),
+             control = rpart.control(cp = 0,
+                                     xval = 100,
+                                     minsplit = 5,
+                                     maxdepth = 5,
+                                     minbucket = 10))
+cp <- fit$cptable[which.min(fit$cptable[,"xerror"]),"CP"]
+plotcp(fit)
+cp %>% kable(caption = "Complexity Parameter")
+```
+
+After finding this complexity parameter for the decision tree, I pruned the induced decision tree according to it. I then proceeded to extract new rules from this pruned decision tree, and used this new set of rules as my pruned rule set. The extracted rules are displayed below.
+
+```{r pruning_process_pt_2, echo=F, eval = T, fig.height=glob_fig_height, fig.width=glob_fig_width, fig.align="center", results='asis', warning=F, message=F}
+
+fit_pruned <- prune(fit, cp = cp)
+# fancyRpartPlot(fit_pruned,
+#                type = 5,
+#                main = "Pruned CART",
+#                sub = NULL)
+fit_party <- as.party.rpart(fit_pruned)
+rules_tidy <- tidyRules(fit_pruned)
+
+check <- data.frame(ID = rules_tidy$id, 
+                    IF = rules_tidy$LHS,
+                    THEN = rules_tidy$RHS,
+                    Support = rules_tidy$support,
+                    # Coverage = paste0(round(rules_tidy$support/nrow(train_smote)*100,3), "%"),
+                    Coverage = rules_tidy$support/nrow(train_smote),
+                    Accuracy = rules_tidy$confidence)
+
+pandoc.table(check, split.tables = 120, caption = "Rules Extracted") %>% pander()
+```
+
+\newpage
+
+The first thing to notice is that 10 rules were pruned away, as the rule set size went from 27 to 17 after the pruning process. I expect some of these rules that were pruned away to be the rules with the lowest coverage. We can check by inspecting the table below. After seeing the minimum coverage achieved, and by referring back to the unpruned rule set on page 15, we can see that the five rules corresponding to ID's 15, 9, 17, 8, and 11 were pruned out of the data set. These five rules had very low coverages, and were overfit on the training set. 
+
+```{r echo=F, warning = F}
+check <- check[order(check$Coverage, decreasing = T),]
+check$Coverage <- round(check$Coverage, 3)
+check[7:17, c("ID", "THEN", "Coverage")]  %>% t()  %>% kable(col.names = NULL, caption = "Pruned Rules: Lowest coverage")
+```
+
+This can be investigated closer when noting that in the pruned rule set, there exist only two rules capable of predicting class label 5, namely ID's 5 and 6, with respective coverages of 0.01424 and 0.07275 and accuracies of 0.625 and 0.5898. In the unpruned rule set, there exist three rules capable of predicting class label 5, namely ID's 5, 6, and 8 with respective coverages of 0.01424, 0.04803 and 0.00466 and accuracies of 0.625, 0.5898 and 0.8947. Due to ID 8's low coverage and its' subpar contribution to generalization performance, it was removed during the pruning process.
+
+We can also see that the majority of rules extracted are less complicated now. For instance, with the unpruned rule set note that on page 11 there is only one rule that utilizes only three if statements in its' antecedent, as seen in the rule with ID 1. All other rules utilize the AND operator of four or five IF statements. In the pruned rule set, there now exist three rules that only require three if statements in their antecedents; namely ID's 1, 6 and 7 with coverages 0.03003, 0.04803 and 0.00466 and accuracies 0.9573, 0.5898, and 0.8947. Similarly, in the pruned rule set, there are 8 rules that utilize 5 if statements. In the unpruned rule set, there were 24 rules that utilized 5 if statements. The unpruned rule therefore contains more complicated rules, and the pruning process reduced the complexity of the rule set. This can be illustrated further by investigating the amount of rules and their respective rule lengths, as seen in the table below.
+
+```{r echo = F}
+unpr_pr <- data.frame(Complexity = c(3,4,5), Unpruned = c(1,2,24), Pruned = c(3,6,8))
+unpr_pr %>% kable(caption = "Complexity of Extracted Rules")
+```
+
+The complexity column refers to the amount of statements used in the antecedent, and it can be seen that the pruned data set not only had more rules that used only 3 and 4 statements, but it also had significantly less rules that used 5 if statements. This undoubtedly reduced the performance of the extracted rules on the training set, but it should hopefully increase the generalization performance.
+
+To investigate the generalization performance of the testing set, I first investigated the performance of the rules with regards to the accuracy and AUC metric. These measures are displayed below.
+
+```{r echo=F, warning = F, message = F}
+pred <- as.factor(predict(fit_pruned, test, type = "class"))
+accuracy(test$Rings, pred) %>% kable(caption = "Accuracy measure: Pruned Rule Set", col.names = "acc")
+
+test_df <- test
+dt_pred <- predict(fit_pruned, test_df, type = "prob")
+# dt_pred <- data.frame(dt_pred)
+colnames(dt_pred)[1] <- "LTF"
+colnames(dt_pred)[14] <- "GTF"
+colnames(dt_pred) <- paste0(colnames(dt_pred), "_pred_dt")
+true_label <- dummies::dummy(test_df$Rings, sep = ".")
+true_label <- data.frame(true_label)
+colnames(true_label) <- gsub(".*?\\.", "", colnames(true_label))
+colnames(true_label) <- paste0(colnames(true_label), "_true")
+colnames(true_label)[1] <- "LTF_true"
+colnames(true_label)[14] <- "GTF_true"
+final_df <- cbind(true_label, dt_pred)
+roc_res <- multi_roc(final_df, force_diag=T)
+a <- unlist(roc_res$AUC)[1:14]
+names(a) <- levels(data$Rings)
+a <- a[order(a,decreasing = T)]
+a %>% t() %>% round(3) %>%  kable(caption = "Pruned Rules: AUC values: Testing Set")
+```
+
+The accuracy is still quite low, however it is slightly better [1.3%] than the initial decision tree as seen on page 11. The AUC metric also revealed that the pruned rule set is much better at classifying class 14. There are also some rules that the AUC metric seems to have gotten worse at classifying, such as class 12. I then proceeded to investigate the same performance measures that were covered with the decision tree as seen below.
+
+```{r echo=F}
+pred <- as.factor(predict(fit_pruned, test, type = "class"))
+a <- confusionMatrix(test$Rings, pred)
+fpru_pred <- a$byClass[,c(1:4, 7, ncol(a$byClass))] 
+Mean_PR <- means(fpru_pred)
+```
+
+Initially, the unpruned decision tree did not predict any instances as belonging to class labels 13 and 14. The pruned rule set differed, in that it did not predict any instances belonging to classes 10 and 13. 
+I will now briefly discuss these performance measures. The sensitivity changed somewhat between the decision tree and the pruned rule set. Classes 4, 8 and 9 seemed to gain the most from the pruning process, as they performed better than the decision tree. These classes were therefore classified correctly more often. Similarly, classes 5 and 6 seemed to perform worse after pruning.
+
+```{r echo = F}
+idx <- 1
+cbind(fpru_pred[,idx], dec_pred[,idx]) %>% kable(caption = colnames(dec_pred)[idx], col.names = c("Pruned Rules", "Decision Tree"))
+```
+
+The specificity is displayed below, and there were very marginal differences between the decision tree and the pruned rule set. Class 9 was the only class that showed a change of greater than 1%, and instances were therefore classified incorrectly as class 9 less often.
+
+```{r echo = F}
+idx <- 2
+cbind(fpru_pred[,idx], dec_pred[,idx]) %>% kable(caption = colnames(dec_pred)[idx], col.names = c("Pruned Rules", "Decision Tree"))
+```
+
+The positive predictive value is displayed below, and we can see a positive change in classes 5, 8, 9, 14 and a significant change in > 15 for the pruned rule set. However, class 15 has a very low positive predictive value and it performed worse than the initial decision tree.
+
+```{r echo = F}
+idx <- 3
+cbind(fpru_pred[,idx], dec_pred[,idx]) %>% kable(caption = colnames(dec_pred)[idx], col.names = c("Pruned Rules", "Decision Tree"))
+```
+
+The negative predictive value is displayed below, and class 15 showed a considerable increase. Instances are therefore less likely to be classified into class 15 if they are not truly of class 15.
+
+```{r echo = F}
+idx <- 4
+cbind(fpru_pred[,idx], dec_pred[,idx]) %>% kable(caption = colnames(dec_pred)[idx], col.names = c("Pruned Rules", "Decision Tree"))
+```
+
+The balanced accuracy is displayed below. This measure shows that classes 4, 8, 9, 10 and > 15 performed better in the pruned rule set. The decision tree performed better in classes 5, 6, and 7 and besides the classes that were not predicted, the rest of the classes seem to perform similarly.
+
+```{r echo = F}
+idx <- 6
+cbind(fpru_pred[,idx], dec_pred[,idx]) %>% kable(caption = colnames(dec_pred)[idx], col.names = c("Pruned Rules", "Decision Tree"))
+```
+
+\newpage
+
+### Covering Rule Induction Algorithm
+
+I proceeded to investigate the covering rule induction algorithm. I decided to use the CN2 Induction Algorithm, which was developed by studying and learning from the ID3, AQ, and AQR algorithms. 
+
+The ID3, or Iterative Dichotomiser 3, algorithm is an old decision tree learner that iterates throughout a data set's set of previously unused features, and splits on the feature that minimizes the entropy the most. This algorithm can easily overfit noise in the data set, and therefore it requires pruning after induction. This algorithm typically terminates when either a leaf node is reached or when the data set's features have all been used. To generalize to new data, the resulting decision tree is simply traversed by the new observations' attributes and the class label is predicted as the leaf node's class label.
+
+AQR induces decision rules from the training data by using the AQ algorithm. These rules are generated such that there is one rule per class, and the decision rules are formatted in an if <cover> then predict <class>. In this format, <cover> represents a boolean combination of selectors, where a selector refers to a test to perform on a data set's attributes. By using the training data, the algorithm searches for an optimal complex to fit the training data. To do this, it uses an heuristic function to generate a set of optimal complexes, in which the rules maximize and minimize the amount of positive and negative examples covered by a rule. From this list of complexes, the complex that covers the most positive examples is selected as the cover that covers the training data the best. 
+
+The algorithm specializes this list of complexes that gets chosen from, by checking how many of the instances are covered by a complex and removing them from the training set. To then extend this cover further, it specializes the existing cover to cover the remaining positive classes, as well as remove any negative classes, by adding more terms to the cover. This induction process is repeated until all positive classes are covered and negative classes are excluded. At this point the best complex is chosen, and the process is repeated for all classes within the data set. Due to the nature of this algorithm, it overfits the classes. To generalize to new data, the resulting set of rules is used and the new instances are labelled as the class associated with the rule that satisfied the instance. If this new instance satisifies more than one rule's cover, it is assigned to the rule that is covered by the most instances. 
+
+The CN2 algorithm retains the beam search functionality and the IF-THEN rule format of the AQR algorithm, and it draws from ID3 by adding a cut-off method for specializing the complexes that is similar to decision tree pruning, and also by broadening the search space of the algorithm by including negative examples in a similar way to a ID3's growing process. CN2 presents an ordered set of if <cover> then predict <class> rules, in which the final rule in the set contains a default rule that predicts the most frequent class in the training instances. In this sense, when the rules are tried from top-bottom it will simply predict the most frequent class. 
+
+The CN2 algorithm starts by selecting a single class and searching for the best complex or complexes to fit this class's instances. It achieves this by a heuristic, which searches for a complex that covers the maximum number of instances for this class. This complex is found by performing a beam search of the complex space, and in CN2, the considered complexes are generated as specializations of the best complexes found up until this stage. These specializations are generated by either adding new conjunctions to a complex, or by removing disjunctive elements from the selectors of a complex. All these newly specialized complexes are evaluated, and if one is better than any of the previous best-found complexes, it is added to this set of best complexes. The size of this set of best complexes is fixed, and the worst performing complex is removed from this set of complexes. After finding this specialized complex, all the instances covered by it are removed from the data set and the process is repeated until all the instances are covered.
+
+The induced CN2 is displayed below with a best rule set size of 5. I did not perform any cross validation to find this best rule set size, I chose it as it seemed to be a common choice among implementations.
+
+\newpage
+
+
+```{r echo = F, warning = F, message = F}
+library(RoughSets)
+train_cov <- SF.asDecisionTable(train_smote, decision.attr = 9) 
+test_cov <- SF.asDecisionTable(test[,-9])
+
+## discretization:
+cut.values <- D.discretize.equal.intervals.RST(train_cov, nOfIntervals = 3)
+
+data.tra <- SF.applyDecTable(train_cov, cut.values)
+data.tst <- SF.applyDecTable(test_cov, cut.values)
+
+rules <- RI.CN2Rules.RST(data.tra, K = 5)
+rules_prnt <-  rules %>% as.character()
+rules_prnt %>% kable(row.names = T, col.names = "Rule", caption = "Extracted Rule Set")
+
+
+
+```
+
+The first thing I noticed about the extracted rules is the simplicity of them when compared to the previous rules extracted. For instance, note rules 2, 5, and 7 in which the covers are constructed from the conjunction of two statements. Also note rule 6 and 27 which are constructed from only only a single statement. Upon closer inspection of the library I used, I discovered that this function applies automatic pruning. I could not implement my own pruning process, and due to a lack of time I will unfortunately not be able to complete question 5 and 6 of the assignment in their entirety as this rule set is already pruned. I will however attempt to do as much of both of these questions as possible.
+
+The second thing I saw was the final and default rule received a significant amount of supporting instances, as denoted by supportSize. These are the instances that pass through the rule set and are assigned as the most frequently occurring class. Once again these rules are substantially less complicated than the decision tree rules, and I believe the most complex rule is Rule 19, which is constructed from 5 IF statements. The majority of these rules seem to be constructed from 3 statements, and even though this model is already pruned, this algorithm requires more rules than the unpruned and pruned rule based classifiers previously discussed. There is a variable named laplace at the end of this rule, and it provides the rules' Laplace estimate of accuracy. I then proceeded to quantify the performance of these rules in terms of coverage and accuracy.
+
+\newpage
+
+
+```{r echo = F}
+
+pred.vals <- predict(rules, data.tst)
+
+lft <- RoughSets::RI.lift(rules)
+conf <- RoughSets::RI.confidence(rules)
+sup <- RoughSets::RI.support(rules)
+dat <- data.frame(sup, conf)
+dat %>% kable(caption = "Covering Rule Performance", col.names = c("Coverage", "Accuracy"))
+```
+
+
+\newpage
+
+The CN2 algorithm is quantified in terms of coverage and accuracy as seen above. There are quite a lot of rules so it is hard to investigate. Let's take a look at all rules that had accuracies above 50%.
+
+```{r echo = F}
+dat <- dat[order(dat$conf, decreasing = T),] 
+dat[dat$conf > 0.5,] %>% kable(caption = "Extracted Rules: Accuracies > 50%", col.names = c("Coverage", "Accuracy"))
+```
+
+Unfortunately, all the rules with accuracies above 50% have very low coverages. The rule with the highest coverage among these ten rules is rule 1, which only has 31 supporting instances and an accuracy of 64.5%. Let's investigate the rules that had coverages exceeding 10%.
+
+```{r echo = F}
+dat <- dat[order(dat$sup, decreasing = T),] 
+dat[dat$sup > 0.1,] %>% kable(caption = "Extracted Rules: Coverage > 10%", col.names = c("Coverage", "Accuracy"))
+```
+
+The coverages of all rules exceeding 10% are displayed above. I noted that the default rule had the highest coverage in the data set, which is somewhat troubling. I also noted that rule 4, with a class label of 4, had the second highest coverage and a higher accuracy than the other three rules in this table. I then proceeded to investigate the generalization performance of these extracted rules.
+
+```{r echo=F} 
+pred.vals <- predict(rules, data.tst, "class") 
+levels(pred.vals$predictions)[14] <- "5" 
+accuracy(test[,9], pred.vals$predictions) %>% kable(caption = "Accuracy", col.names = "acc")
+```
+
+The accuracy is displayed above, and it can be seen to be very poor, in fact it has a lower accuracy than the previous two methods.
+
+```{r echo = F, warning = F, message=F}
+a <- confusionMatrix(test[,9], pred.vals$predictions)
+cov_pred <- a$byClass[,c(1:4, 7, ncol(a$byClass))] 
+cov_pred %>% kable()
+```
+
+Further performance measures are displayed above, and when comparing these measures to those illustrated on page 20 and 21, this algorithm can be seen to perform worse than both extracted tree rule sets in almost every possible way. Class 4, 5 and 13 were never classified correctly as seen in the sensitivity. Class 4 and 7 performed slightly better in terms of specificity than the previous two models, but as their sensitivities have decreased, the model just classified less instances as belonging to these two classes and this increase in specificity is not indicative of a better performing model. Both the PPV and NPV shows that Class > 15 is performing significantly worse than the extracted tree rule sets. The balanced accuracies for each rule set is shown below. We can see that class 10 and 6 achieved higher balanced accuracies than the decision trees, and class < 4 performed significantly worse.
+
+
+```{r echo = F}
+idx <- 6
+cbind(fpru_pred[,idx], dec_pred[,idx]) %>% kable(caption = colnames(dec_pred)[idx], col.names = c("Pruned Rules", "Decision Tree"))
+cov_pred__ba <- cov_pred[order(cov_pred[,idx],decreasing = T),idx]
+cov_pred__ba %>% kable(caption = "Balanced accuracy", col.names = "Covering Algorithm")
+```
+
+
+
+### Rule Association
+
+I proceeded to investigate the rule association algorithm. I selected the apriori algorithm. This algorithm generates rules from a data set by using frequent itemsets and the apriori property. This apriori property states that the subset of any itemset that has a supporting value below a certain threshold can be discarded, as any subset of this itemset will also have a supporting value below the threshold. If an itemset has a supporting value that exceeds this threshold, it is considered a frequent itemset and gets extended by candidate generation.
+
+The process of this algorithm can be explained as follow. First, the data is scanned to find all frequent sets with k items (for the first iteration k = 1). This is called a k-itemset, and after generation it is pruned according to the minimum specified support. All remaining instances are frequent itemsets. By using these frequent sets, we can generate frequent sets with k+1 candidate items by self-joining the frequent sets. These new frequent sets are selected as candidates, and are joined into the existing k-itemset. The frequent sets are then pruned and the candidate generation process is repeated until the self-joining process leaves the set of frequent itemsets empty, at which point the rule association algorithm is terminated.
+
+I then proceeded to implement the algorithm and based on previous applications I selected a maximum length of 10 items for the rules extracted. Similarly, I chose an accuracy of 60% as this value seemed to be what was considered good in the decision trees and covering algorithms. Finally, I used a support value of 0.001 as the smoting process ensured that the coverage of the data set is quite low. This associated a set of 136 rules, and the first five rules are displayed below.
+
+```{r echo = F, eval=T, warning = F, message = F}
+nms <- paste0("Rings=",saved)
+rules_ap <- apriori(train_smote, 
+                    parameter = list(supp = 0.001, conf = 0.6, maxlen = 10, target = "rules"),
+                    appearance = list (default="lhs",rhs=nms))
+summary(rules_ap)
+```
+
+It can be seen that the majority of rules 6 - 7 statements long.
+
+
+I then proceeded to investigate the top five rules in terms of support. The highest achieved support is still quite low, at  0.003106796.  
+
+```{r echo = F, eval=T, warning = F, message = F}
+top.support <- sort(rules_ap, decreasing = TRUE, na.last = NA, by = "support")
+inspect(head(top.support, 5))  # or inspect(sort(top.support)[1:10])
+```
+
+I then proceeded to investigate the top five rules in terms of accuracy. The highest achieved accuracy was 80% as seen below. 
+
+```{r echo = F, eval=T, warning = F, message = F}
+top.confidence <- sort(rules_ap, decreasing = TRUE, na.last = NA, by = "confidence")
+inspect(head(top.confidence, 5))
+
+```
+
+
+
+
+\newpage
+
+# References
+
+https://rdrr.io/cran/rpart/f/inst/doc/longintro.pdf
+
+https://towardsdatascience.com/decision-trees-d07e0f420175
+
+https://www.tc.columbia.edu/elda/blog/content/receiver-operating-characteristic-roc-area-under-the-curve-auc/
+
+Details about Performance Measures: Post Block Assignment 2, Module: Data Science 874, 18620426, Francois van Zyl, 27 March 2020, Stellenbosch University
+
+Class Slides for Topics 3 and 4, Data Analytics 874, Stellenbosch University, 2021
+
+P. CLARK AND T. NIBLETT, The CN2 Induction Algorithm,  October 25, 1988
+
+https://www.upgrad.com/blog/apriori-algorithm/
